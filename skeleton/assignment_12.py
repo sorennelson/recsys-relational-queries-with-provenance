@@ -6,10 +6,12 @@ from __future__ import print_function
 import csv
 import logging
 from enum import Enum
+from operator import delitem
 from typing import List, Tuple
 import uuid
 
 import ray
+import pandas as pd
 
 # Note (john): Make sure you use Python's logger to log
 #              information about your program
@@ -141,12 +143,40 @@ class Scan(Operator):
                                    pull=pull,
                                    partition_strategy=partition_strategy)
         # YOUR CODE HERE
-        pass
+        # pass
+        self.fp = filepath
+        self.outputs = outputs
+        self.filter = filter
+        self.track_prov = track_prov
+        self.propagate_prov = propagate_prov
+        self.pull = pull
+        self.partition_strategy = partition_strategy
+
+        # TODO: Tune
+        self.batch_size = 5
+        self.finished = False
+        self.data = pd.read_csv(self.fp, chunksize=self.batch_size)
+        assert self.pull, 'Only Pull based implementation to start'
+
 
     # Returns next batch of tuples in given file (or None if file exhausted)
     def get_next(self):
         # YOUR CODE HERE
-        pass
+        if self.finished: 
+            return None
+        
+        # Get next batch of data
+        df_batch = self.data.get_chunk()
+
+        # EOF
+        if len(df_batch) == 0:
+            self.finished = True
+            return None
+
+        # DF -> [ATuple]
+        tuples = [ATuple(i, None, None) for i in list(df_batch.itertuples(index=False, name=None))]
+        return tuples
+
 
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
@@ -161,7 +191,7 @@ class Scan(Operator):
 
     # Starts the process of reading tuples (only for push-based evaluation)
     def start(self):
-        pass
+        # for output in self.outputs
 
 # Equi-join operator
 class Join(Operator):
@@ -562,6 +592,9 @@ if __name__ == "__main__":
     #       AND R.MID = 'M'
 
     # YOUR CODE HERE
+    s = Scan('../data/friends.txt', None)
+    s.get_next()
+    s.get_next()
 
 
     # TASK 2: Implement recommendation query for User A
