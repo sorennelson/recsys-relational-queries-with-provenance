@@ -7,6 +7,7 @@ import csv
 import logging
 from enum import Enum
 from operator import delitem
+from turtle import left, right
 from typing import List, Tuple
 import uuid
 
@@ -147,16 +148,11 @@ class Scan(Operator):
         self.fp = filepath
         self.outputs = outputs
         self.filter = filter
-        self.track_prov = track_prov
-        self.propagate_prov = propagate_prov
-        self.pull = pull
-        self.partition_strategy = partition_strategy
 
         # TODO: Tune
         self.batch_size = 5
         self.finished = False
-        self.data = pd.read_csv(self.fp, chunksize=self.batch_size)
-        assert self.pull, 'Only Pull based implementation to start'
+        self.data = pd.read_csv(self.fp, chunksize=self.batch_size, sep=' ')
 
 
     # Returns next batch of tuples in given file (or None if file exhausted)
@@ -166,7 +162,11 @@ class Scan(Operator):
             return None
         
         # Get next batch of data
-        df_batch = self.data.get_chunk()
+        try:
+            df_batch = self.data.get_chunk()
+        except:
+            self.finished = True
+            return None
 
         # EOF
         if len(df_batch) == 0:
@@ -174,7 +174,8 @@ class Scan(Operator):
             return None
 
         # DF -> [ATuple]
-        tuples = [ATuple(i, None, None) for i in list(df_batch.itertuples(index=False, name=None))]
+        # TODO: [:-1] because of NAN column
+        tuples = [ATuple(i[:-1], None, self) for i in list(df_batch.itertuples(index=False, name=None))]
         return tuples
 
 
@@ -192,6 +193,7 @@ class Scan(Operator):
     # Starts the process of reading tuples (only for push-based evaluation)
     def start(self):
         # for output in self.outputs
+        pass
 
 # Equi-join operator
 class Join(Operator):
@@ -232,12 +234,90 @@ class Join(Operator):
                                    pull=pull,
                                    partition_strategy=partition_strategy)
         # YOUR CODE HERE
-        pass
+        self.left_inputs = left_inputs
+        self.right_inputs = right_inputs
+        self.outputs = outputs
+        self.left_join_attribute = left_join_attribute
+        self.right_join_attribute = right_join_attribute
+
+        if self.pull:
+            self.left_dict = dict()
+            self.left_hashed = False
+
+        else:
+            self.left_dict = dict()
+            self.right_dict = dict()
+            
 
     # Returns next batch of joined tuples (or None if done)
     def get_next(self):
         # YOUR CODE HERE
-        pass
+
+        if not self.left_hashed:
+            # Block while hashing all of left table
+            self._hash_full_left()
+            # Unblock after left table is in memory
+            self.left_hashed = True
+
+        # Probe with right
+        right_tups = self._pull_input_tups(self.right_inputs)
+
+        # Return None if done
+        if right_tups is None:
+            return None
+        joined_tups = self._probe(right_tups, 
+                    self.right_join_attribute,
+                    self.left_dict,
+                    is_right=True)
+
+        return joined_tups
+
+    def _hash_full_left(self):
+        # Hash all of left table and store in memory
+        left_tups = self._pull_input_tups(self.left_inputs)
+        while left_tups is not None:
+            for tup in left_tups:
+                left_attr = tup.tuple[self.left_join_attribute]
+                if left_attr in self.left_dict:
+                    self.left_dict[left_attr].append(tup)
+                else:
+                    self.left_dict[left_attr] = [tup]
+            left_tups = self._pull_input_tups(self.left_inputs)
+
+    # Probe a dict with the given tuples on the given attribute. 
+        # is_right: Probing with right
+    def _probe(self, tups, join_attr, dict, is_right):
+        joined_tups = []
+        for probe_tup in tups:
+            attr = probe_tup.tuple[join_attr]
+            # Probe opposite dict
+            if attr in dict:
+                # Join
+                for hashed_tup in dict[attr]:
+                    # Remove join attribute from right tuple
+                    if is_right:
+                        right_data = [probe_tup.tuple[i] for i in range(len(probe_tup.tuple)) if i != self.right_join_attribute]
+                        joined_data = tuple([x for x in hashed_tup.tuple] + right_data)
+                    else:
+                        right_data = [hashed_tup.tuple[i] for i in range(len(hashed_tup.tuple)) if i != self.right_join_attribute]
+                        joined_data = tuple([x for x in probe_tup.tuple] + right_data)
+
+                    new_tup = ATuple(joined_data, probe_tup.metadata, self)
+                    joined_tups.append(new_tup)
+
+        return joined_tups
+
+        
+    def _pull_input_tups(self, inputs):
+        tups = []
+        for inp in inputs:
+            next = inp.get_next()
+            if next:
+                tups.extend(next)
+
+        # Return None if done
+        return tups if len(tups) > 0 else None
+        
 
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
@@ -290,12 +370,33 @@ class Project(Operator):
                                       pull=pull,
                                       partition_strategy=partition_strategy)
         # YOUR CODE HERE
-        pass
+        self.inputs = inputs
+        self.outputs = outputs
+        self.fields_to_keep = fields_to_keep
 
     # Return next batch of projected tuples (or None if done)
     def get_next(self):
         # YOUR CODE HERE
-        pass
+        # Get all tups form input ops
+        tups = []
+        for inp in self.inputs:
+            tups.extend(inp.get_next())
+
+        # Project
+        self._project(tups)
+
+        return tups
+
+    # Runs a projection on a list of tuples, in place
+    def _project(self, tups):
+        for i in range(len(tups)):
+            data = tups[i].tuple
+            # Project
+            new_data = tuple(data[j] for j in self.fields_to_keep)
+            # Update ATuple in list
+            projected = ATuple(new_data, tups[i].metadata, self)
+            tups[i] = projected
+        
 
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
@@ -310,7 +411,14 @@ class Project(Operator):
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
-        pass
+
+        # Project
+        self._project(tuples)
+
+        # Send to output ops
+        for output in self.outputs:
+            output.apply(tuples)
+        
 
 # Group-by operator
 class GroupBy(Operator):
@@ -567,16 +675,41 @@ class Select(Operator):
                                      pull=pull,
                                      partition_strategy=partition_strategy)
         # YOUR CODE HERE
-        pass
+        self.inputs = inputs
+        self.outputs = outputs
+        self.predicate = predicate
 
     # Returns next batch of tuples that pass the filter (or None if done)
     def get_next(self):
         # YOUR CODE HERE
-        pass
+        # Get all tups form input ops
+        tups = []
+        for inp in self.inputs:
+            tups.extend(inp.get_next())
+        
+        tups = self._select(tups)
+        return tups
+
+    def _select(self, tups):
+        selected = []
+        for tup in tups:
+            # TODO: Assuming predicate takes in tuple and returns T/F
+            # May need to recreate ATuple here with new operator
+            # If tuple satisfies predicate, add to output
+            if self.predicate(tup):
+                selected.append(tup)
+        
+        return selected
+
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
-        pass
+        
+        tups = self._select(tuples)
+
+        # Send to output ops
+        for output in self.outputs:
+            output.apply(tups)
 
 
 if __name__ == "__main__":
@@ -592,9 +725,17 @@ if __name__ == "__main__":
     #       AND R.MID = 'M'
 
     # YOUR CODE HERE
-    s = Scan('../data/friends.txt', None)
-    s.get_next()
-    s.get_next()
+    s1 = Scan('../data/friends-test.txt', None)
+    # s.get_next()
+    # s.get_next()
+
+    # p = Project([s], None, fields_to_keep=[1])
+    # print(p.get_next()[0].tuple)
+
+    s2 = Scan('../data/friends-test.txt', None)
+
+    j = Join([s1], [s2], None, 1, 0)
+    print([i.tuple for i in j.get_next()])
 
 
     # TASK 2: Implement recommendation query for User A
