@@ -20,19 +20,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
-parser = argparse.ArgumentParser(description='Assignement 1&2.')
-parser.add_argument('--query', type=int, help='Which query to run [1 / 2 / 3].')
-parser.add_argument('--ff', type=str, default='../data/friends-test.txt', help='Friends file path.')
-parser.add_argument('--mf', type=str, default='../data/movie_ratings-test.txt', help='Movie file path.')
-parser.add_argument('--uid', type=int, default=1190, help='uid.')
-parser.add_argument('--mid', type=int, default=0, help='mid.')
-parser.add_argument('--pull', type=int, default=1, help='0/1 - 0 Push, 1 Pull')
-parser.add_argument('--output', type=str, help='File path.')
-
-# TODO: Check less than and more than batch size
-BATCH_SIZE=20
-
-args = parser.parse_args()
+BATCH_SIZE=1000
 
 # Generates unique operator IDs
 def _generate_uuid():
@@ -76,6 +64,11 @@ class ATuple:
     def responsible_inputs(self) -> List[Tuple]:
         # YOUR CODE HERE (ONLY FOR TASK 4 IN ASSIGNMENT 2)
         pass
+
+    # Print only the tuple
+    def __repr__(self) -> str:
+        return str(self.tuple)
+        
 
 # Data operator
 class Operator:
@@ -171,7 +164,6 @@ class Scan(Operator):
     def set_join_output_side(self, is_right):
         self.join_output = is_right
 
-
     # Returns next batch of tuples in given file (or None if file exhausted)
     def get_next(self):
         # YOUR CODE HERE
@@ -227,7 +219,6 @@ class Scan(Operator):
             # Create and send tuples
             tuples = self._pd_to_tuples(df_batch)
             for output in self.outputs:
-            #     output.apply(tuples)
                 if self.join_output is None:
                     output.apply(tuples)
                 else:
@@ -235,13 +226,11 @@ class Scan(Operator):
 
         # EOF
         for output in self.outputs:
-        #     output.apply(None)
             if self.join_output is None:
                 output.apply(None)
             else:
                 output.apply(None, self.join_output)
                 
-
 # Equi-join operator
 class Join(Operator):
     """Equi-join operator.
@@ -306,35 +295,30 @@ class Join(Operator):
 
         if not self.left_hashed:
             # Block while hashing all of left table
-            self._hash_full_left()
+            self.__hash_full_left()
             # Unblock after left table is in memory
             self.left_hashed = True
 
         # Probe with right
-        right_tups = self._pull_input_tups(self.right_inputs)
+        right_tups = self.__pull_input_tups(self.right_inputs)
         # End of inputs
         if right_tups is None:
             return None
-        joined_tups, _ = self._probe(right_tups, 
+        joined_tups, _ = self.__probe(right_tups, 
                                     self.right_join_attribute,
                                     self.left_dict,
                                     is_right=True)
         return joined_tups 
 
-    def _hash_full_left(self):
-        # Hash all of left table and store in memory
-        left_tups = self._pull_input_tups(self.left_inputs)
+    # Hash all of left table and store in memory
+    def __hash_full_left(self):
+        left_tups = self.__pull_input_tups(self.left_inputs)
         while left_tups is not None:
-            _ = self._hash(left_tups, self.left_dict, is_right=False)
-            # for tup in left_tups:
-            #     left_attr = tup.tuple[self.left_join_attribute]
-            #     if left_attr in self.left_dict:
-            #         self.left_dict[left_attr]['pushed'].append(tup)
-            #     else:
-            #         self.left_dict[left_attr] = {'pushed': [tup]}
-            left_tups = self._pull_input_tups(self.left_inputs)
-        
-    def _pull_input_tups(self, inputs):
+            _ = self.__hash(left_tups, self.left_dict, is_right=False)
+            left_tups = self.__pull_input_tups(self.left_inputs)
+
+    # Pull batch of input tuples
+    def __pull_input_tups(self, inputs):
         tups = []
         finished = True
         for inp in inputs:
@@ -346,7 +330,9 @@ class Join(Operator):
         # Return None if done
         return None if finished else tups
 
-    def _hash(self, tuples, dict, is_right):
+    # Hash a batch of tuples into the given dictionary
+    #   is_right: Hashing with right
+    def __hash(self, tuples, dict, is_right):
         joined_tups = []
         for hashed_tup in tuples:
             join_attr = self.right_join_attribute if is_right else self.left_join_attribute
@@ -356,9 +342,9 @@ class Join(Operator):
                 dict[attr]['pushed'].append(hashed_tup)
 
                 if 'probed' in dict[attr]:
-                    # Join on push-based
+                    # Join on push-based any previous succesful probes
                     for probe_tup in dict[attr]['probed']:
-                        joined_tup = self._join(hashed_tup, probe_tup, is_right)
+                        joined_tup = self.__join(hashed_tup, probe_tup, is_right)
                         joined_tups.append(joined_tup)
 
             else:
@@ -367,8 +353,8 @@ class Join(Operator):
         return joined_tups
 
     # Probe a dict with the given tuples on the given attribute. 
-        # is_right: Probing with right
-    def _probe(self, tups, join_attr, dict, is_right):
+    #   is_right: Probing with right
+    def __probe(self, tups, join_attr, dict, is_right):
         joined_tups, non_joined = [], []
 
         for probe_tup in tups:
@@ -376,7 +362,8 @@ class Join(Operator):
             # Probe opposite dict
             if attr in dict:
 
-                # If push-based we need to store joined probe tuples
+                # If push-based we need to store joined probe tuples 
+                #   (so we can join with future tuples)
                 if not self.pull:
                     if 'probed' in dict[attr]:
                         dict[attr]['probed'].append(probe_tup)
@@ -384,22 +371,17 @@ class Join(Operator):
                         dict[attr]['probed'] = [probe_tup]
 
                 for hashed_tup in dict[attr]['pushed']:
-                    joined_tup = self._join(hashed_tup, probe_tup, is_right)
-                    # if is_right:
-                    #     right_data = [probe_tup.tuple[i] for i in range(len(probe_tup.tuple)) if i != self.right_join_attribute]
-                    #     joined_data = tuple([x for x in hashed_tup.tuple] + right_data)
-                    # else:
-                    #     right_data = [hashed_tup.tuple[i] for i in range(len(hashed_tup.tuple)) if i != self.right_join_attribute]
-                    #     joined_data = tuple([x for x in probe_tup.tuple] + right_data)
-
-                    # new_tup = ATuple(joined_data, probe_tup.metadata, self)
+                    joined_tup = self.__join(hashed_tup, probe_tup, is_right)
                     joined_tups.append(joined_tup)
             else:
-                # Store non_joined tups for push-based
+                # Store non_joined probing tups for push-based
+                #   (so we can push to own dict for future tuples)
                 non_joined.append(probe_tup)
         return joined_tups, non_joined
 
-    def _join(self, hashed_tup, probe_tup, is_right):
+    # Join a left and right tuple
+    #   is_right: Probing with right
+    def __join(self, hashed_tup, probe_tup, is_right):
         # Remove join attribute from right tuple
         if is_right:
             right_data = [probe_tup.tuple[i] for i in range(len(probe_tup.tuple)) if i != self.right_join_attribute]
@@ -423,7 +405,12 @@ class Join(Operator):
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple], is_right):
-        # TODO: Only works at the moment for select inputs
+        # TODO: Extend to all ops (Only select/Scan right now)
+        # Keep a left and right hashed dictionary. When we recieve 
+        # a new batch for e.g. left we probe right dict then hash 
+        # any tuples that couldn't join on the probe to left dict.
+        # Any succesful probes are stored on right dict to be joined
+        # with future hashes of the right table.
 
         if tuples is None:
             # Check opposite l/r_finished - if both are done then end
@@ -451,16 +438,15 @@ class Join(Operator):
             opp_dict = self.left_dict
 
         # Probe opposite dict
-        joined_tups, non_joined_tups = self._probe(tuples, join_attr, opp_dict, is_right)
+        joined_tups, non_joined_tups = self.__probe(tuples, join_attr, opp_dict, is_right)
 
         # Push remaining tuples to this dict
         joined_tups.extend(
-            self._hash(non_joined_tups, dict, is_right))
+            self.__hash(non_joined_tups, dict, is_right))
 
         # Push joined tuples to next ops
         for output in self.outputs:
             output.apply(joined_tups)
-
 
 # Project operator
 class Project(Operator):
@@ -505,7 +491,7 @@ class Project(Operator):
     # Return next batch of projected tuples (or None if done)
     def get_next(self):
         # YOUR CODE HERE
-        # Get all tups form input ops
+        # Get all tups from input ops
         tups = []
         finished = True
         for inp in self.inputs:
@@ -514,17 +500,16 @@ class Project(Operator):
                 tups.extend(next)
                 finished = False
 
-        # If no more input tuples return none
         if finished:
             return None
 
         # Project
-        self._project(tups)
+        self.__project(tups)
 
         return tups
 
     # Runs a projection on a list of tuples, in place
-    def _project(self, tups):
+    def __project(self, tups):
         for i in range(len(tups)):
             data = tups[i].tuple
             # Project
@@ -533,7 +518,6 @@ class Project(Operator):
             projected = ATuple(new_data, tups[i].metadata, self)
             tups[i] = projected
         
-
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
@@ -550,7 +534,7 @@ class Project(Operator):
 
         # Project
         if tuples is not None:
-            self._project(tuples)
+            self.__project(tuples)
 
         # Send to output ops
         for output in self.outputs:
@@ -599,8 +583,7 @@ class GroupBy(Operator):
         self.key = key
         self.value = value
         self.agg_fun = agg_fun
-        # Stores {group: {sum: x, n: x}}
-        self.groups = dict()
+        self.groups = dict() # Stores {group: {sum: x, n: x}}
         self.grouped = False
         
         self.batch_size = BATCH_SIZE
@@ -611,17 +594,18 @@ class GroupBy(Operator):
 
         # Block until tuples are all grouped
         while not self.grouped:
-            tups = self._pull_input_tups()
+            tups = self.__pull_input_tups()
             if tups is None:
                 self.grouped = True
             else:
-                self._group_stats(tups)
+                self.__group_stats(tups)
         
-        grouped_tuples = self._create_tuples_from_stats()
+        grouped_tuples = self.__create_tuples_from_stats()
 
         return grouped_tuples
 
-    def _group_stats(self, tups):
+    # Compile stats per group for batch of input tuples
+    def __group_stats(self, tups):
         for i in range(len(tups)):
             data = tups[i].tuple
             key = data[self.key] if self.key is not None else 'ALL'
@@ -633,7 +617,8 @@ class GroupBy(Operator):
                 self.groups[key] = {'sum': data[self.value], 
                                     'n': 1}
 
-    def _create_tuples_from_stats(self):
+    # Create our new output tuples from group stats
+    def __create_tuples_from_stats(self):
         # No groups left
         if len(self.groups) == 0:
             return None
@@ -649,8 +634,8 @@ class GroupBy(Operator):
                     tups.append(ATuple((group, stat['sum'] / stat['n'],), 
                                         None, self))
             else:
-                # TODO: Log error
-                print("ERROR")
+                # TODO: Probably best to do this as early as possible (in init)
+                 logger.error("Unknown aggregation function.")
 
             groups_to_remove.append(group)
             if i == self.batch_size - 1: break
@@ -661,7 +646,8 @@ class GroupBy(Operator):
             
         return tups
 
-    def _pull_input_tups(self):
+    # Pull batch of input tuples
+    def __pull_input_tups(self):
         tups = []
         finished = True
         for inp in self.inputs:
@@ -686,20 +672,21 @@ class GroupBy(Operator):
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
-        # Block until grouped all stats
+        # Block until we have grouped all stats
         if not self.grouped:
             if tuples is not None:
-                self._group_stats(tuples)
+                self.__group_stats(tuples)
             else:
                 self.grouped = True
 
         if self.grouped:
-            grouped_tuples = self._create_tuples_from_stats()
+            # Output our stats in batches
+            grouped_tuples = self.__create_tuples_from_stats()
             while grouped_tuples is not None:
                 for output in self.outputs:
                     output.apply(grouped_tuples)
 
-                grouped_tuples = self._create_tuples_from_stats()
+                grouped_tuples = self.__create_tuples_from_stats()
 
             for output in self.outputs:
                 output.apply(None)
@@ -742,8 +729,7 @@ class Histogram(Operator):
         self.inputs = inputs
         self.outputs = outputs
         self.key = key
-        # Stores {bucket: count}
-        self.buckets = dict()
+        self.buckets = dict() # Stores {bucket: count}
         self.grouped = False
         
         self.batch_size = BATCH_SIZE
@@ -754,16 +740,17 @@ class Histogram(Operator):
 
         # Block until tuples are all in buckets
         while not self.grouped:
-            tups = self._pull_input_tups()
+            tups = self.__pull_input_tups()
             if tups is None:
                 self.grouped = True
             else:
-                self._group_stats(tups)
+                self.__group_stats(tups)
     
-        grouped_tuples = self._create_tuples_from_stats()
+        grouped_tuples = self.__create_tuples_from_stats()
         return grouped_tuples
 
-    def _group_stats(self, tups):
+    # Compile stats per group for batch of input tuples
+    def __group_stats(self, tups):
         for i in range(len(tups)):
             key = tups[i].tuple[self.key]
 
@@ -772,26 +759,29 @@ class Histogram(Operator):
             else:
                 self.buckets[key] = 1
 
-    def _create_tuples_from_stats(self):
+    # Create our new output tuples from group stats
+    def __create_tuples_from_stats(self):
         # No buckets left
-        if not self.buckets:
+        if self.buckets is None:
             return None
+
+        tups = [ATuple((self.buckets,), None, self)]
+        self.buckets = None
         
-        tups, buckets_to_remove = [], []
-        for i, (bucket, stat) in enumerate(self.buckets.items()):
-            # TODO: What is supposed to be returned here
-            tups.append(ATuple((bucket, stat,), None, self))
-
-            buckets_to_remove.append(bucket)
-            if i == self.batch_size - 1: break
-
-        # Remove buckets from dict
-        for i in range(len(buckets_to_remove)):
-            del self.buckets[buckets_to_remove[i]]
+        # TODO: Left in because I'm not sure what the output should be
+        # tups, buckets_to_remove = [], []
+        # for i, (bucket, stat) in enumerate(self.buckets.items()):
+        #     tups.append(ATuple(('{}:{}'.format(bucket, stat),), None, self))
+        #     buckets_to_remove.append(bucket)
+        #     if i == self.batch_size - 1: break
+        # # Remove buckets from dict
+        # for i in range(len(buckets_to_remove)):
+        #     del self.buckets[buckets_to_remove[i]]
             
         return tups
 
-    def _pull_input_tups(self):
+    # Pull batch of input tuples
+    def __pull_input_tups(self):
         tups = []
         finished = True
         for inp in self.inputs:
@@ -808,17 +798,18 @@ class Histogram(Operator):
         # Block until grouped all stats
         if not self.grouped:
             if tuples is not None:
-                self._group_stats(tuples)
+                self.__group_stats(tuples)
             else:
                 self.grouped = True
 
         if self.grouped:
-            grouped_tuples = self._create_tuples_from_stats()
+            # Output our stats in batches
+            grouped_tuples = self.__create_tuples_from_stats()
             while grouped_tuples is not None:
                 for output in self.outputs:
                     output.apply(grouped_tuples)
 
-                grouped_tuples = self._create_tuples_from_stats()
+                grouped_tuples = self.__create_tuples_from_stats()
 
             for output in self.outputs:
                 output.apply(None)
@@ -874,7 +865,7 @@ class OrderBy(Operator):
         
         # Block until all tups are loaded and sorted
         if not self.loaded:
-            self._pull_and_sort()
+            self.__pull_and_sort()
             self.loaded = True
         
         # Return None if done
@@ -888,14 +879,16 @@ class OrderBy(Operator):
         self.tups = self.tups[end_ind:]
         return output_tups
 
-    def _pull_and_sort(self):
-        tups = self._pull_input_tups()
+    # Pull all input tuples then sort
+    def __pull_and_sort(self):
+        tups = self.__pull_input_tups()
         while tups is not None:
             self.tups.extend(tups)
-            tups = self._pull_input_tups()
+            tups = self.__pull_input_tups()
         self.tups = sorted(self.tups, key=self.comparator, reverse=not self.ASC)
 
-    def _pull_input_tups(self):
+    # Pull batch of input tuples
+    def __pull_input_tups(self):
         tups = []
         finished = True
         for inp in self.inputs:
@@ -995,7 +988,7 @@ class TopK(Operator):
         if self.i >= self.k: 
             return None
 
-        tups = self._pull_input_tups()
+        tups = self.__pull_input_tups()
 
         # Return None if no more input
         if tups is None:
@@ -1006,7 +999,8 @@ class TopK(Operator):
         self.i += len(tups) 
         return tups
 
-    def _pull_input_tups(self):
+    # Pull batch of input tuples
+    def __pull_input_tups(self):
         tups = []
         finished = True
         for inp in self.inputs:
@@ -1091,16 +1085,17 @@ class Select(Operator):
     def get_next(self):
         # YOUR CODE HERE
 
-        tups = self._pull_input_tups()
+        tups = self.__pull_input_tups()
         # Return None if done
         if tups is None:
             return None
 
-        selected_tups = self._select(tups)
+        selected_tups = self.__select(tups)
         
         return selected_tups
 
-    def _pull_input_tups(self):
+    # Pull batch of input tuples
+    def __pull_input_tups(self):
         tups = []
         finished = True
         for inp in self.inputs:
@@ -1112,26 +1107,28 @@ class Select(Operator):
         # Return None if done
         return None if finished else tups   
 
-    def _select(self, tups):
+    # Selects input tuples using self.predicate
+    def __select(self, tups):
         selected = []
         for tup in tups:
-            # TODO: May need to recreate ATuple here with new operator
+            # TODO: Recreate ATuple here with new operator
             # If tuple satisfies predicate, add to output
             if self.predicate(tup):
                 selected.append(tup)
 
         return selected
 
-
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
         
-        tups = self._select(tuples) if tuples is not None else None
+        # Return none if done
+        tups = self.__select(tuples) if tuples is not None else None
 
         # Send to output ops
         for output in self.outputs:
             if self.join_output is None:
                 output.apply(tups)
+            # Join output
             else:
                 output.apply(tups, self.join_output)
 
@@ -1166,6 +1163,7 @@ class Sink(Operator):
         assert not pull
         self.started = False
         self.batches = []
+        self.start_scans = []
 
     def set_start_scans(self, start_scans):
         self.start_scans = start_scans
@@ -1178,17 +1176,31 @@ class Sink(Operator):
             for op in self.start_scans:
                 op.start()
             self.started = True
-        
+
+        if self.batches is None: 
+            return None
+
         next_batch = self.batches[0]
-        self.batches = self.batches[1:]
+        self.batches = self.batches[1:] if len(self.batches) > 1 else None
         return next_batch
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
+        # Store all pushed tuples
         self.batches.append(tuples)
 
+# Using the root operation, pulls all input tuples and writes them to CSV
+def output_to_csv(csv_fname, col_names, root_op):
+    with open(csv_fname, mode='w') as file:
+        writer = csv.writer(file, delimiter=' ')
+        writer.writerow(col_names)
 
-# TODO: Docstrings
+        next = root_op.get_next()
+        while next is not None:
+            writer.writerows([x.tuple for x in next])
+            next = root_op.get_next()
+
+
 def process_query1(ff, mf, uid, mid, pull):
     # TASK 1: Implement 'likeness' prediction query for User A and Movie M
     #
@@ -1199,9 +1211,7 @@ def process_query1(ff, mf, uid, mid, pull):
     #       AND R.MID = 'M'
 
     # YOUR CODE HERE
-
     if pull:
-        # TODO: Comments
         sc1 = Scan(ff, None)
         sc2 = Scan(mf, None)
 
@@ -1211,11 +1221,7 @@ def process_query1(ff, mf, uid, mid, pull):
         join = Join([se1], [se2], None, 1, 0)
         avg = GroupBy([join], None, None, 3, 'AVG')
 
-        # TODO: Handle outputs
-        next = avg.get_next()
-        while next is not None:
-            print([x.tuple for x in next])
-            next = avg.get_next()
+        output_to_csv(args.output, ["#", "likeness"], avg)
 
     else:
         sink = Sink(pull=pull)
@@ -1231,12 +1237,7 @@ def process_query1(ff, mf, uid, mid, pull):
         sc2 = Scan(mf, [se2], pull=pull)
 
         sink.set_start_scans([sc1, sc2])
-        # TODO: Handle outputs
-        next = sink.get_next()
-        while next is not None:
-            print([x.tuple for x in next])
-            next = sink.get_next()
-
+        output_to_csv(args.output, ["#", "likeness"], sink)
 
 def process_query2(ff, mf, uid, mid, pull):
     # TASK 2: Implement recommendation query for User A
@@ -1263,15 +1264,15 @@ def process_query2(ff, mf, uid, mid, pull):
         order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False)
         limit = TopK([order], None, 1)
 
-        # TODO: Handle outputs
-        next = limit.get_next()
-        while next is not None:
-            print([x.tuple for x in next])
-            next = limit.get_next()
+        project = Project([limit], None, [0])
+
+        output_to_csv(args.output, ["#", "MID"], project)
 
     else:
         sink = Sink(pull=pull)
-        limit = TopK(None, [sink], 1, pull=pull)
+
+        project = Project(None, [sink], [0], pull=pull)
+        limit = TopK(None, [project], 1, pull=pull)
 
         order = OrderBy(None, [limit], lambda x: x.tuple[1], ASC=False, pull=pull)
 
@@ -1286,12 +1287,8 @@ def process_query2(ff, mf, uid, mid, pull):
         sc2.set_join_output_side(is_right=True)
 
         sink.set_start_scans([sc1, sc2])
-        # TODO: Handle outputs
-        next = sink.get_next()
-        while next is not None:
-            print([x.tuple for x in next])
-            next = sink.get_next()
 
+        output_to_csv(args.output, ["#", "MID"], sink)
 
 def process_query3(ff, mf, uid, mid, pull):
     # TASK 3: Implement explanation query for User A and Movie M
@@ -1311,20 +1308,14 @@ def process_query3(ff, mf, uid, mid, pull):
         se2 = Select([sc2], None, lambda x: x.tuple[1] == mid)
 
         join = Join([se1], [se2], None, 1, 0)
-
         hist = Histogram([join], None, 3)
 
-        # TODO: Handle outputs
-        next = hist.get_next()
-        while next is not None:
-            print([x.tuple for x in next])
-            next = hist.get_next()
+        output_to_csv(args.output, ["#", "explanation"], hist)
 
     else:
-        # TODO
+        
         sink = Sink(pull=pull)
         hist = Histogram(None, [sink], 3, pull=pull)
-
         join = Join(None, None, [hist], 1, 0, pull=pull)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
@@ -1336,14 +1327,20 @@ def process_query3(ff, mf, uid, mid, pull):
         sc2 = Scan(mf, [se2], pull=pull)
 
         sink.set_start_scans([sc1, sc2])
-        # TODO: Handle outputs
-        next = sink.get_next()
-        while next is not None:
-            print([x.tuple for x in next])
-            next = sink.get_next()
+        output_to_csv(args.output, ["#", "explanation"], sink)
 
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Assignement 1&2.')
+    parser.add_argument('--query', type=int, help='Which query to run [1 / 2 / 3].')
+    parser.add_argument('--ff', type=str, default='../data/friends-test.txt', help='Friends file path.')
+    parser.add_argument('--mf', type=str, default='../data/movie_ratings-test.txt', help='Movie file path.')
+    parser.add_argument('--uid', type=int, default=1190, help='uid.')
+    parser.add_argument('--mid', type=int, default=0, help='mid.')
+    parser.add_argument('--pull', type=int, default=1, help='0/1 - 0 Push, 1 Pull')
+    parser.add_argument('--output', type=str, default='../data/output.txt', help='File path.')
+    args = parser.parse_args()
 
     logger.info("Assignment #1")
 
@@ -1354,9 +1351,7 @@ if __name__ == "__main__":
     elif args.query == 3:
         process_query3(args.ff, args.mf, args.uid, args.mid, args.pull==1)
     else:
-        print('Error')
-        # TODO: Log error
-
+        logger.error("Only queries 1/2/3 implemented")
 
     # TODO:
     # TASK 4: Turn your data operators into Ray actors
