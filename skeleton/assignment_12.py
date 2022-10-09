@@ -320,13 +320,14 @@ class Join(Operator):
 
         # Separate tuples into corresponding partitions
         #   Do this prior to calling apply so we can batch the calls
-        partition_batches = [[]] * len(self.outputs)
+        partition_batches = [[] for _ in range(len(self.outputs))]
         for tuple in tuples:
             # Partition = hash(attr) % num_instances
             attr = tuple.tuple[self.right_join_attribute] if is_right else tuple.tuple[self.left_join_attribute] 
             partition_batches[attr % len(self.outputs)].append(tuple)
         
         # Join each partition separately
+        print('pb', partition_batches)
         futures = []
         for i in range(len(partition_batches)):
             future = self.outputs[i].apply.remote(partition_batches[i], is_right)
@@ -735,7 +736,7 @@ class GroupBy(Operator):
 
         # Separate tuples into corresponding partitions
         #   Do this prior to calling apply so we can batch the calls
-        partition_batches = [[]] * len(self.outputs)
+        partition_batches = [[] for _ in range(len(self.outputs))]
         for tuple in tuples:
             # Partition = hash(key) % num_instances
             attr = tuple.tuple[self.key]
