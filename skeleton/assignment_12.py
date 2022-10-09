@@ -283,9 +283,12 @@ class Join(Operator):
         self.batch_size = BATCH_SIZE
         self.left_join_attribute = left_join_attribute
         self.right_join_attribute = right_join_attribute
+        self.outputs = outputs
+        self.right_finished = False
+        self.left_finished = False
 
         # Create multiple join instances as output - each operates on separate partitions of the data
-        self.outputs = [_PartitionJoin.remote(None, None, outputs, 
+        self.instances = [_PartitionJoin.remote(None, None, None, 
                                                 left_join_attribute, 
                                                 right_join_attribute, 
                                                 pull=pull) 
@@ -309,32 +312,51 @@ class Join(Operator):
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple], is_right):
-        # Send None to each output
         if tuples is None:
-            futures = []
-            for output in self.outputs:
-                future = output.apply.remote(tuples, is_right)
-                futures.append(future)
-            ray.get(futures)
+            self.__end_input(is_right)
             return
 
         # Separate tuples into corresponding partitions
         #   Do this prior to calling apply so we can batch the calls
-        partition_batches = [[] for _ in range(len(self.outputs))]
+        partition_batches = [[] for _ in range(len(self.instances))]
         for tuple in tuples:
             # Partition = hash(attr) % num_instances
             attr = tuple.tuple[self.right_join_attribute] if is_right else tuple.tuple[self.left_join_attribute] 
-            partition_batches[attr % len(self.outputs)].append(tuple)
+            partition_batches[attr % len(self.instances)].append(tuple)
         
         # Join each partition separately
-        print('pb', partition_batches)
         futures = []
         for i in range(len(partition_batches)):
-            future = self.outputs[i].apply.remote(partition_batches[i], is_right)
+            future = self.instances[i].apply.remote(partition_batches[i], is_right)
             futures.append(future)
+        joined_partitions = ray.get(futures)
+
+        # Send all joined partitions to output
+        futures = []
+        for partition in joined_partitions:
+            for output in self.outputs:
+                future = output.apply.remote(partition)
+                futures.append(future)
         ray.get(futures)
 
-# Equi-join operator
+    # Call when input is finished. Ensures both sides are finished and notifies output.
+    def __end_input(self, is_right):
+        done = False
+        if is_right:
+            self.right_finished = True
+            done = self.left_finished
+        else:
+            self.left_finished = True
+            done = self.right_finished
+        
+        if done:
+            # Send to output ops
+            futures = []
+            for output in self.outputs:
+                future = output.apply.remote(None)
+                futures.append(future)
+            ray.get(futures)
+
 @ray.remote
 class _PartitionJoin(Operator):
     """Equi-join operator. Operates on a single Partition of data.
@@ -389,9 +411,6 @@ class _PartitionJoin(Operator):
         else:
             self.left_dict = dict()
             self.right_dict = dict()
-            self.left_finished = False
-            self.right_finished = False
-            
 
     # Returns next batch of joined tuples (or None if done)
     def get_next(self):
@@ -515,25 +534,6 @@ class _PartitionJoin(Operator):
         # any tuples that couldn't join on the probe to left dict.
         # Any succesful probes are stored on right dict to be joined
         # with future hashes of the right table.
-
-        if tuples is None:
-            # Check opposite l/r_finished - if both are done then end
-            done = False
-            if is_right:
-                self.right_finished = True
-                done = self.left_finished
-            else:
-                self.left_finished = True
-                done = self.right_finished
-            
-            if done:
-                # Send to output ops
-                futures = []
-                for output in self.outputs:
-                    future = output.apply.remote(None)
-                    futures.append(future)
-                ray.get(futures)
-            return
         
         if not is_right:
             join_attr = self.left_join_attribute
@@ -551,12 +551,7 @@ class _PartitionJoin(Operator):
         joined_tups.extend(
             self.__hash(non_joined_tups, dict, is_right))
 
-        # Push joined tuples to next ops
-        futures = []
-        for output in self.outputs:
-            future = output.apply.remote(joined_tups)
-            futures.append(future)
-        ray.get(futures)
+        return joined_tups
 
 # Project operator
 @ray.remote
@@ -697,12 +692,13 @@ class GroupBy(Operator):
         self.key = key
         self.value = value
         self.agg_fun = agg_fun
+        self.outputs = outputs
         
         self.batch_size = BATCH_SIZE
 
         # Create multiple group-by instances as output 
         #   each operates on separate partitions of the data
-        self.outputs = [_PartitionGroupBy.remote(None, outputs, 
+        self.instances = [_PartitionGroupBy.remote(None, None, 
                                                 key, value, agg_fun,
                                                 pull=pull) 
                             for _ in range(NUM_GROUP_BY_PARTITIONS)]
@@ -725,31 +721,50 @@ class GroupBy(Operator):
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
-        # Send None to each output
         if tuples is None:
-            futures = []
-            for output in self.outputs:
-                future = output.apply.remote(tuples)
-                futures.append(future)
-            ray.get(futures)
+            self.__end_input()
             return
 
         # Separate tuples into corresponding partitions
         #   Do this prior to calling apply so we can batch the calls
-        partition_batches = [[] for _ in range(len(self.outputs))]
+        partition_batches = [[] for _ in range(len(self.instances))]
         for tuple in tuples:
             # Partition = hash(key) % num_instances
             attr = tuple.tuple[self.key]
-            partition_batches[attr % len(self.outputs)].append(tuple)
+            partition_batches[attr % len(self.instances)].append(tuple)
         
         # Group each partition separately
         futures = []
         for i in range(len(partition_batches)):
-            future = self.outputs[i].apply.remote(partition_batches[i])
+            future = self.instances[i].apply.remote(partition_batches[i])
             futures.append(future)
         ray.get(futures)
 
-# Group-by operator
+    # Call when input is finished. Gathers output from each instance and sends to output.
+    def __end_input(self):
+        # Send None to each instance - ends grouping and all tuples will be returned
+        #   Blocks until all instances are done
+        futures = []
+        for output in self.instances:
+            future = output.apply.remote(None)
+            futures.append(future)
+        grouped_partitions = ray.get(futures)
+
+        # Output all tuples
+        futures = []
+        for partition in grouped_partitions:
+            for batch in partition:
+                for output in self.outputs:
+                    future = output.apply.remote(batch)
+                    futures.append(future)
+        
+        # Send None to output
+        for output in self.outputs:
+            future = output.apply.remote(None)
+            futures.append(future)
+
+        ray.get(futures)
+
 @ray.remote
 class _PartitionGroupBy(Operator):
     """Group-by operator. Operates on a single Partition of data.
@@ -761,7 +776,7 @@ class _PartitionGroupBy(Operator):
         operator in the plan.
         key (int): The index of the key to group tuples.
         value (int): The index of the attribute we want to aggregate.
-        agg_fun (function): The aggregation function (e.g. AVG)
+        agg_fun (function): The aggregation function.
         track_prov (bool): Defines whether to keep input-to-output
         mappings (True) or not (False).
         propagate_prov (bool): Defines whether to propagate provenance
@@ -818,7 +833,7 @@ class _PartitionGroupBy(Operator):
     def __group_stats(self, tups):
         for i in range(len(tups)):
             data = tups[i].tuple
-            key = data[self.key] # if self.key is not None else 'ALL' # TODO: Remove from non-ray version
+            key = data[self.key]
 
             if key in self.groups:
                 self.groups[key]['sum'] += data[self.value]
@@ -837,19 +852,6 @@ class _PartitionGroupBy(Operator):
         for i, (group, stat) in enumerate(self.groups.items()):
             tups.append(ATuple((group, self.agg_fun(stat),), 
                                     None, self))
-            # TODO: Remove from non-ray version
-            # if self.agg_fun == 'AVG':
-            #     # If we are only averaging then don't keep name
-            #     # TODO: Remove from non-ray version
-            #     # if group == 'ALL' and len(self.groups) == 1:
-            #     #     tups.append(ATuple((stat['sum'] / stat['n'],), 
-            #     #                         None, self))
-            #     # else:
-            #         # tups.append(ATuple((group, stat['sum'] / stat['n'],), 
-            #         #                     None, self))
-            # else:
-            #     # TODO: Probably best to do this as early as possible (in init)
-            #      logger.error("Unknown aggregation function.")
 
             groups_to_remove.append(group)
             if i == self.batch_size - 1: break
@@ -897,19 +899,12 @@ class _PartitionGroupBy(Operator):
             # Output our stats in batches
             grouped_tuples = self.__create_tuples_from_stats()
             
-            futures = []
+            output_tuples = []
             while grouped_tuples is not None:
-                for output in self.outputs:
-                    future = output.apply.remote(grouped_tuples)
-                    futures.append(future)
-
+                output_tuples.append(grouped_tuples)
                 grouped_tuples = self.__create_tuples_from_stats()
 
-            for output in self.outputs:
-                future = output.apply.remote(None)
-                futures.append(future)
-            
-            ray.get(futures)
+            return output_tuples
 
 # Custom histogram operator
 @ray.remote
@@ -1388,7 +1383,7 @@ class Sink(Operator):
     """
     # Initializes sink operator
     def __init__(self,
-                 num_input,
+                 num_input=1,
                  track_prov=False,
                  propagate_prov=False,
                  pull=True,
@@ -1454,8 +1449,8 @@ def process_query1(ff, mf, uid, mid, pull):
     assert not pull, 'Only Push-based Ray ops implemented. Switch to main branch for Pull-based.'
 
     sink = Sink.remote(1, pull=pull)
-    project = Project.remote(None, [sink], [1], pull=pull) # TODO: Add to non-ray version
-    avg = GroupBy.remote(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull)  # TODO: Add to non-ray version
+    project = Project.remote(None, [sink], [1], pull=pull)
+    avg = GroupBy.remote(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull) 
     join = Join.remote(None, None, [avg], 1, 0, pull=pull)
 
     se1 = Select.remote(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
@@ -1487,9 +1482,6 @@ def process_query2(ff, mf, uid, mid, pull):
 
     # YOUR CODE HERE
     assert not pull, 'Only Push-based Ray ops implemented. Switch to main branch for Pull-based.'
-    # TODO:
-    # Tests
-    # Apply changes to non-ray version
     sink = Sink.remote(1, pull=pull)
 
     project = Project.remote(None, [sink], [0], pull=pull)
@@ -1537,7 +1529,6 @@ if __name__ == "__main__":
     else:
         logger.error("Only queries 1/2/3 implemented")
 
-    # TODO:
     # TASK 4: Turn your data operators into Ray actors
     #
     # NOTE (john): Add your changes for Task 4 to a new git branch 'ray'

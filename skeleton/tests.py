@@ -1,5 +1,6 @@
 
 import pytest
+import ray
 
 from assignment_12 import ATuple, Scan, Join, Project, GroupBy, Histogram, OrderBy, TopK, Select, Sink
 
@@ -11,18 +12,18 @@ class TestOperators:
 
     def __pull(self, op):
         x = []
-        next = op.get_next()
+        next = ray.get(op.get_next.remote())
         while next is not None:
             x.extend(next)
-            next = op.get_next()
+            next = ray.get(op.get_next.remote())
 
         return x
 
-    # Scan
-    def test_scan(self):
-        op = Scan('../data/friends.txt', None)
-        x = self.__pull(op)
-        assert len(x) == 78991
+    # # Scan
+    # def test_scan(self):
+    #     op = Scan('../data/friends.txt', None)
+    #     x = self.__pull(op)
+    #     assert len(x) == 78991
         
     # Join
     def test_join(self):
@@ -30,14 +31,14 @@ class TestOperators:
         ans = [(1190, 6, 0, 4), (1190, 6, 1, 0), (1020, 1095, 0, 5), 
                 (1190, 1095, 0, 5), (1020, 1095, 2, 5), (1190, 1095, 2, 5)]
 
-        sink = Sink(pull=False)
-        op = Join(None, None, [sink], 1, 0, pull=False)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = Join.remote(None, None, [sink], 1, 0, pull=False)
         
-        op.apply(left, is_right=False)
-        op.apply(right, is_right=True)
+        op.apply.remote(left, is_right=False)
+        op.apply.remote(right, is_right=True)
         # NOTE (soren): Not needed but for consistency
-        op.apply(None, is_right=False)
-        op.apply(None, is_right=True)
+        op.apply.remote(None, is_right=False)
+        ray.get(op.apply.remote(None, is_right=True))
         
         output = self.__pull(sink)
         assert all([x.tuple in ans for x in output]) and len(ans) == len(output)
@@ -47,11 +48,12 @@ class TestOperators:
         # All Friends
         ans = [(15,), (1095,), (1095,), (6,)]
 
-        sink = Sink(pull=False)
-        op = Project(None, [sink], [1], pull=False)
-        op.apply(left)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = Project.remote(None, [sink], [1], pull=False)
+
+        op.apply.remote(left)
         # NOTE (soren): Not needed but for consistency
-        op.apply(None)
+        ray.get(op.apply.remote(None))
 
         output = self.__pull(sink)
         assert all([x.tuple in ans for x in output]) and len(ans) == len(output)
@@ -61,11 +63,12 @@ class TestOperators:
         # Average rating per movie
         ans = [(0, 4.5), (1, 1), (2, 5)]
 
-        sink = Sink(pull=False)
-        op = GroupBy(None, [sink], 1, 2, 'AVG', pull=False)
-        op.apply(right)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = GroupBy.remote(None, [sink], 1, 2, lambda x: x['sum'] / x['n'], pull=False)
+
+        op.apply.remote(right)
         # Have to finish aggregation
-        op.apply(None)
+        ray.get(op.apply.remote(None))
 
         output = self.__pull(sink)
         assert all([x.tuple in ans for x in output]) and len(ans) == len(output)
@@ -75,11 +78,11 @@ class TestOperators:
         # Histogram of ratings per movie
         ans = [({0: 2, 1: 2, 2: 1},)]
 
-        sink = Sink(pull=False)
-        op = Histogram(None, [sink], 1, 'AVG', pull=False)
-        op.apply(right)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = Histogram.remote(None, [sink], 1, 'AVG', pull=False)
+        op.apply.remote(right)
         # Have to finish counting
-        op.apply(None)
+        ray.get(op.apply.remote(None))
 
         output = self.__pull(sink)
         assert all([x.tuple in ans for x in output]) and len(ans) == len(output)
@@ -90,11 +93,11 @@ class TestOperators:
         ans = [ATuple((6, 0, 4)), ATuple((1095, 0, 5)), ATuple((5, 1, 2)), 
                 ATuple((6, 1, 0)), ATuple((1095, 2, 5))]
 
-        sink = Sink(pull=False)
-        op = OrderBy(None, [sink], lambda x: x.tuple[1], pull=False)
-        op.apply(right)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = OrderBy.remote(None, [sink], lambda x: x.tuple[1], pull=False)
+        op.apply.remote(right)
         # Have to finish so we can sort
-        op.apply(None)
+        ray.get(op.apply.remote(None))
 
         output = self.__pull(sink)
         assert all([output[i].tuple == ans[i].tuple for i in range(len(output))]) and len(ans) == len(output)
@@ -104,12 +107,12 @@ class TestOperators:
         # Top-k sorted movies by movie-id
         ans = [ATuple((6, 0, 4)), ATuple((1095, 0, 5)), ATuple((5, 1, 2))]
 
-        sink = Sink(pull=False)
-        op = TopK(None, [sink], 3, pull=False)
-        op2 = OrderBy(None, [op], lambda x: x.tuple[1], pull=False)
-        op2.apply(right)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = TopK.remote(None, [sink], 3, pull=False)
+        op2 = OrderBy.remote(None, [op], lambda x: x.tuple[1], pull=False)
+        op2.apply.remote(right)
         # Have to finish so we can sort
-        op2.apply(None)
+        ray.get(op2.apply.remote(None))
 
         output = self.__pull(sink)
         assert all([output[i].tuple == ans[i].tuple for i in range(len(output))]) and len(ans) == len(output)
@@ -119,11 +122,11 @@ class TestOperators:
         # Select all ratings of movies 0
         ans = [(6, 0, 4), (1095, 0, 5)]
 
-        sink = Sink(pull=False)
-        op = Select(None, [sink], lambda x: x.tuple[1] == 0, pull=False)
-        op.apply(right)
+        sink = Sink.remote(num_input=1, pull=False)
+        op = Select.remote(None, [sink], lambda x: x.tuple[1] == 0, pull=False)
+        op.apply.remote(right)
         # NOTE (soren): Not needed but for consistency
-        op.apply(None)
+        ray.get(op.apply.remote(None))
 
         output = self.__pull(sink)
         assert all([x.tuple in ans for x in output]) and len(ans) == len(output)
