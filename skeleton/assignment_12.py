@@ -551,7 +551,7 @@ class GroupBy(Operator):
         operator in the plan.
         key (int): The index of the key to group tuples.
         value (int): The index of the attribute we want to aggregate.
-        agg_fun (function): The aggregation function (e.g. AVG)
+        agg_fun (function): The aggregation function.
         track_prov (bool): Defines whether to keep input-to-output
         mappings (True) or not (False).
         propagate_prov (bool): Defines whether to propagate provenance
@@ -625,17 +625,8 @@ class GroupBy(Operator):
         
         tups, groups_to_remove = [], []
         for i, (group, stat) in enumerate(self.groups.items()):
-            if self.agg_fun == 'AVG':
-                # If we are only averaging then don't keep name
-                if group == 'ALL' and len(self.groups) == 1:
-                    tups.append(ATuple((stat['sum'] / stat['n'],), 
-                                        None, self))
-                else:
-                    tups.append(ATuple((group, stat['sum'] / stat['n'],), 
-                                        None, self))
-            else:
-                # TODO: Probably best to do this as early as possible (in init)
-                 logger.error("Unknown aggregation function.")
+            tups.append(ATuple((group, self.agg_fun(stat),), 
+                                    None, self))
 
             groups_to_remove.append(group)
             if i == self.batch_size - 1: break
@@ -1219,13 +1210,15 @@ def process_query1(ff, mf, uid, mid, pull):
         se2 = Select([sc2], None, lambda x: x.tuple[1] == mid)
 
         join = Join([se1], [se2], None, 1, 0)
-        avg = GroupBy([join], None, None, 3, 'AVG')
+        avg = GroupBy([join], None, 2, 3, lambda x: x['sum'] / x['n'])
+        project = Project.remote([avg], None, [1], pull=pull)
 
-        output_to_csv(args.output, ["#", "likeness"], avg)
+        output_to_csv(args.output, ["#", "likeness"], project)
 
     else:
         sink = Sink(pull=pull)
-        avg = GroupBy(None, [sink], None, 3, 'AVG')
+        project = Project.remote(None, [sink], [1], pull=pull)
+        avg = GroupBy.remote(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull) 
         join = Join(None, None, [avg], 1, 0, pull=pull)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
@@ -1259,7 +1252,7 @@ def process_query2(ff, mf, uid, mid, pull):
         se1 = Select([sc1], None, lambda x: x.tuple[0] == uid)
 
         join = Join([se1], [sc2], None, 1, 0)
-        avg = GroupBy([join], None, 2, 3, 'AVG')
+        avg = GroupBy([join], None, 2, 3, lambda x: x['sum'] / x['n'])
 
         order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False)
         limit = TopK([order], None, 1)
@@ -1276,7 +1269,7 @@ def process_query2(ff, mf, uid, mid, pull):
 
         order = OrderBy(None, [limit], lambda x: x.tuple[1], ASC=False, pull=pull)
 
-        avg = GroupBy(None, [order], 2, 3, 'AVG', pull=pull)
+        avg = GroupBy(None, [order], 2, 3, lambda x: x['sum'] / x['n'], pull=pull)
         join = Join(None, None, [avg], 1, 0, pull=pull)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)

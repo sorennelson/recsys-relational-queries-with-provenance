@@ -62,7 +62,7 @@ class TestOperators:
         ans = [(0, 4.5), (1, 1), (2, 5)]
 
         sink = Sink(pull=False)
-        op = GroupBy(None, [sink], 1, 2, 'AVG', pull=False)
+        op = GroupBy(None, [sink], 1, 2, lambda x: x['sum'] / x['n'], pull=False)
         op.apply(right)
         # Have to finish aggregation
         op.apply(None)
@@ -76,7 +76,7 @@ class TestOperators:
         ans = [({0: 2, 1: 2, 2: 1},)]
 
         sink = Sink(pull=False)
-        op = Histogram(None, [sink], 1, 'AVG', pull=False)
+        op = Histogram(None, [sink], 1, lambda x: x['sum'] / x['n'], pull=False)
         op.apply(right)
         # Have to finish counting
         op.apply(None)
