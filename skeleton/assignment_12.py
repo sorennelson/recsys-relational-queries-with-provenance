@@ -187,7 +187,7 @@ class Scan(Operator):
         return tuples
 
     def _pd_to_tuples(self, df_batch):
-        # TODO: [:-1] because of NAN column
+        # [:-1] because of NAN column
         return [ATuple(i[:-1], None, self) for i in list(df_batch.itertuples(index=False, name=None))]
 
     # Returns the lineage of the given tuples
