@@ -73,7 +73,7 @@ class TestOperators:
     # Histogram
     def test_histogram(self):
         # Histogram of ratings per movie
-        ans = [({"Rating":0, "Count":2},), ({"Rating":1, "Count":2},), ({"Rating":2, "Count":1},)]
+        ans = [(0,2,), (1,2,), (2,1,)]
 
         sink = Sink(pull=False)
         op = Histogram(None, [sink], 1, lambda x: x['sum'] / x['n'], pull=False)

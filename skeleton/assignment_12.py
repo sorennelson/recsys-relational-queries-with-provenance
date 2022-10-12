@@ -756,19 +756,9 @@ class Histogram(Operator):
         if self.buckets is None:
             return None
 
-        # tups = [ATuple((self.buckets,), None, self)]
-        # self.buckets = None
-        
-        # TODO: Left in because I'm not sure what the output should be
-        tups, buckets_to_remove = [], []
-        for i, (bucket, stat) in enumerate(self.buckets.items()):
-            d = {'Rating': bucket, 'Count': stat}
-            tups.append(ATuple((d,), None, self))
-            # buckets_to_remove.append(bucket)
-            # if i == self.batch_size - 1: break
-        # Remove buckets from dict
-        # for i in range(len(buckets_to_remove)):
-        #     del self.buckets[buckets_to_remove[i]]
+        tups = []
+        for bucket, stat in self.buckets.items():
+            tups.append(ATuple((bucket, stat), None, self))
         self.buckets = None
             
         return tups
