@@ -1175,7 +1175,7 @@ class Sink(Operator):
 # Using the root operation, pulls all input tuples and writes them to CSV
 def output_to_csv(csv_fname, col_names, root_op):
     with open(csv_fname, mode='w') as file:
-        writer = csv.writer(file, delimiter=' ')
+        writer = csv.writer(file, delimiter=',')
         writer.writerow(col_names)
 
         next = root_op.get_next()
