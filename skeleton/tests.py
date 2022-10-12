@@ -76,7 +76,7 @@ class TestOperators:
     # Histogram
     def test_histogram(self):
         # Histogram of ratings per movie
-        ans = [({"Rating":0, "Count":2},), ({"Rating":1, "Count":2},), ({"Rating":2, "Count":1},)]
+        ans = [(0,2,), (1,2,), (2,1,)]
 
         sink = Sink.remote(num_input=1, pull=False)
         op = Histogram.remote(None, [sink], 1, 'AVG', pull=False)

@@ -983,8 +983,7 @@ class Histogram(Operator):
         
         tups = []
         for bucket, stat in self.buckets.items():
-            d = {'Rating': bucket, 'Count': stat}
-            tups.append(ATuple((d,), None, self))
+            tups.append(ATuple((bucket, stat), None, self))
         self.buckets = None
             
         return tups
@@ -1420,7 +1419,7 @@ class Sink(Operator):
 # Using the root operation, pulls all input tuples (using Sink if Push-based) and writes them to CSV
 def output_to_csv(csv_fname, col_names, root_op):
     with open(csv_fname, mode='w') as file:
-        writer = csv.writer(file, delimiter=' ')
+        writer = csv.writer(file, delimiter=',')
         writer.writerow(col_names)
 
         next = ray.get(root_op.get_next.remote())
