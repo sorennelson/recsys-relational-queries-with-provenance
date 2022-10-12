@@ -1211,14 +1211,14 @@ def process_query1(ff, mf, uid, mid, pull):
 
         join = Join([se1], [se2], None, 1, 0)
         avg = GroupBy([join], None, 2, 3, lambda x: x['sum'] / x['n'])
-        project = Project.remote([avg], None, [1], pull=pull)
+        project = Project([avg], None, [1], pull=pull)
 
         output_to_csv(args.output, ["#", "likeness"], project)
 
     else:
         sink = Sink(pull=pull)
-        project = Project.remote(None, [sink], [1], pull=pull)
-        avg = GroupBy.remote(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull) 
+        project = Project(None, [sink], [1], pull=pull)
+        avg = GroupBy(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull) 
         join = Join(None, None, [avg], 1, 0, pull=pull)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
