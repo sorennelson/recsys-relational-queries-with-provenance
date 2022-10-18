@@ -836,11 +836,9 @@ class _PartitionGroupBy(Operator):
             key = data[self.key]
 
             if key in self.groups:
-                self.groups[key]['sum'] += data[self.value]
-                self.groups[key]['n'] += 1
+                self.groups[key].append(data[self.value])
             else:
-                self.groups[key] = {'sum': data[self.value], 
-                                    'n': 1}
+                self.groups[key] = [data[self.value]]
 
     # Create our new output tuples from group stats
     def __create_tuples_from_stats(self):
@@ -1442,7 +1440,7 @@ def process_query1(ff, mf, uid, mid, pull):
 
     sink = Sink.remote(1, pull=pull)
     project = Project.remote(None, [sink], [1], pull=pull)
-    avg = GroupBy.remote(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull) 
+    avg = GroupBy.remote(None, [project], 2, 3, lambda x: sum(x) / len(x), pull=pull) 
     join = Join.remote(None, None, [avg], 1, 0, pull=pull)
 
     se1 = Select.remote(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
@@ -1481,7 +1479,7 @@ def process_query2(ff, mf, uid, mid, pull):
 
     order = OrderBy.remote(None, [limit], lambda x: x.tuple[1], ASC=False, pull=pull)
 
-    avg = GroupBy.remote(None, [order], 2, 3, lambda x: x['sum'] / x['n'], pull=pull)
+    avg = GroupBy.remote(None, [order], 2, 3, lambda x: sum(x) / len(x), pull=pull)
     join = Join.remote(None, None, [avg], 1, 0, pull=pull)
 
     se1 = Select.remote(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
