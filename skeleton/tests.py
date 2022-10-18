@@ -62,7 +62,7 @@ class TestOperators:
         ans = [(0, 4.5), (1, 1), (2, 5)]
 
         sink = Sink(pull=False)
-        op = GroupBy(None, [sink], 1, 2, lambda x: x['sum'] / x['n'], pull=False)
+        op = GroupBy(None, [sink], 1, 2, lambda x: sum(x) / len(x), pull=False)
         op.apply(right)
         # Have to finish aggregation
         op.apply(None)

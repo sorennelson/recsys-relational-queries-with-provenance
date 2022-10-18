@@ -611,11 +611,9 @@ class GroupBy(Operator):
             key = data[self.key] if self.key is not None else 'ALL'
 
             if key in self.groups:
-                self.groups[key]['sum'] += data[self.value]
-                self.groups[key]['n'] += 1
+                self.groups[key].append(data[self.value])
             else:
-                self.groups[key] = {'sum': data[self.value], 
-                                    'n': 1}
+                self.groups[key] = [data[self.value]]
 
     # Create our new output tuples from group stats
     def __create_tuples_from_stats(self):
@@ -1202,7 +1200,7 @@ def process_query1(ff, mf, uid, mid, pull):
         se2 = Select([sc2], None, lambda x: x.tuple[1] == mid)
 
         join = Join([se1], [se2], None, 1, 0)
-        avg = GroupBy([join], None, 2, 3, lambda x: x['sum'] / x['n'])
+        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x))
         project = Project([avg], None, [1], pull=pull)
 
         output_to_csv(args.output, ["#", "likeness"], project)
@@ -1210,7 +1208,7 @@ def process_query1(ff, mf, uid, mid, pull):
     else:
         sink = Sink(pull=pull)
         project = Project(None, [sink], [1], pull=pull)
-        avg = GroupBy(None, [project], 2, 3, lambda x: x['sum'] / x['n'], pull=pull) 
+        avg = GroupBy(None, [project], 2, 3, lambda x: sum(x) / len(x), pull=pull) 
         join = Join(None, None, [avg], 1, 0, pull=pull)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
@@ -1244,7 +1242,7 @@ def process_query2(ff, mf, uid, mid, pull):
         se1 = Select([sc1], None, lambda x: x.tuple[0] == uid)
 
         join = Join([se1], [sc2], None, 1, 0)
-        avg = GroupBy([join], None, 2, 3, lambda x: x['sum'] / x['n'])
+        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x))
 
         order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False)
         limit = TopK([order], None, 1)
@@ -1261,7 +1259,7 @@ def process_query2(ff, mf, uid, mid, pull):
 
         order = OrderBy(None, [limit], lambda x: x.tuple[1], ASC=False, pull=pull)
 
-        avg = GroupBy(None, [order], 2, 3, lambda x: x['sum'] / x['n'], pull=pull)
+        avg = GroupBy(None, [order], 2, 3, lambda x: sum(x) / len(x), pull=pull)
         join = Join(None, None, [avg], 1, 0, pull=pull)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
