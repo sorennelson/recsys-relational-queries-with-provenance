@@ -48,7 +48,7 @@ class ATuple:
     # Returns the lineage of self
     def lineage(self) -> List[ATuple]:
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        return self.operator.lineage([self])
 
     # Returns the Where-provenance of the attribute at index 'att_index' of self
     def where(self, att_index) -> List[Tuple]:
@@ -193,7 +193,13 @@ class Scan(Operator):
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        if not self.pull:
+            tuple_lineage = []
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+
+        return tuples
+
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
@@ -275,6 +281,7 @@ class Join(Operator):
         self.outputs = outputs
         self.left_join_attribute = left_join_attribute
         self.right_join_attribute = right_join_attribute
+        self.left_tup_size = 0
 
         self.batch_size = BATCH_SIZE
 
@@ -386,16 +393,51 @@ class Join(Operator):
         if is_right:
             right_data = [probe_tup.tuple[i] for i in range(len(probe_tup.tuple)) if i != self.right_join_attribute]
             joined_data = tuple([x for x in hashed_tup.tuple] + right_data)
+
+            if self.track_prov:
+                self.left_tup_size = len(hashed_tup.tuple)
+
         else:
             right_data = [hashed_tup.tuple[i] for i in range(len(hashed_tup.tuple)) if i != self.right_join_attribute]
             joined_data = tuple([x for x in probe_tup.tuple] + right_data)
 
+            if self.track_prov:
+                self.left_tup_size = len(probe_tup.tuple)
+            
+
         return ATuple(joined_data, probe_tup.metadata, self)
 
     # Returns the lineage of the given tuples
-    def lineage(self, tuples):
+    def lineage(self, tuples, is_right=False):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        
+        tuple_lineage = []
+        if self.pull:
+            l_inp_tuples, r_inp_tuples = self.__map_outputs_to_inputs(tuples)
+            for inp in self.left_inputs:
+                tuple_lineage += inp.lineage(l_inp_tuples)
+
+            for inp in self.right_inputs:
+                tuple_lineage += inp.lineage(r_inp_tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+
+            l_inp_tuples, r_inp_tuples = self.__map_outputs_to_inputs(tuples)
+            tuple_lineage = r_inp_tuples if is_right else l_inp_tuples
+                
+        return tuple_lineage
+
+    def __map_outputs_to_inputs(self, tuples):
+        r_inp_tuples, l_inp_tuples = [], []
+        for tup in tuples:
+            l_inp_tuples += [ATuple(tup.tuple[:self.left_tup_size])]
+
+            # Insert join attribute back into right tuple
+            right_data = list(tup.tuple[self.left_tup_size: self.left_tup_size+self.right_join_attribute]) + \
+                [tup.tuple[self.left_join_attribute]] + list(tup.tuple[self.left_tup_size+self.right_join_attribute:])
+            r_inp_tuples += [ATuple(tuple(right_data))]
+        return l_inp_tuples, r_inp_tuples
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
@@ -487,6 +529,7 @@ class Project(Operator):
         self.inputs = inputs
         self.outputs = outputs
         self.fields_to_keep = fields_to_keep
+        self.output_to_inputs = dict()
 
     # Return next batch of projected tuples (or None if done)
     def get_next(self):
@@ -516,12 +559,41 @@ class Project(Operator):
             new_data = tuple(data[j] for j in self.fields_to_keep)
             # Update ATuple in list
             projected = ATuple(new_data, tups[i].metadata, self)
+
+            if self.track_prov:
+                # Store input/output mapping
+                if new_data in self.output_to_inputs:
+                    self.output_to_inputs[new_data].append(tups[i])
+                else:
+                    self.output_to_inputs[new_data] = [tups[i]]
+
             tups[i] = projected
+
         
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        
+        tuple_lineage = []
+        if self.pull:
+            inp_tuples = self.__map_outputs_to_inputs(tuples)
+            
+            for inp in self.inputs:
+                tuple_lineage += inp.lineage(inp_tuples)
+        else:   
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+
+            tuple_lineage = self.__map_outputs_to_inputs(tuple_lineage)
+        
+        return tuple_lineage
+
+    def __map_outputs_to_inputs(self, tuples):
+        inp_tuples = []
+        for tup in tuples:
+            inp_tuples += self.output_to_inputs[tup.tuple]
+        return inp_tuples
+            
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
@@ -587,6 +659,8 @@ class GroupBy(Operator):
         self.grouped = False
         
         self.batch_size = BATCH_SIZE
+        
+        self.output_to_inputs = dict()
 
     # Returns aggregated value per distinct key in the input (or None if done)
     def get_next(self):
@@ -612,8 +686,12 @@ class GroupBy(Operator):
 
             if key in self.groups:
                 self.groups[key].append(data[self.value])
+                if self.track_prov:
+                    self.output_to_inputs[key].append(tups[i])
             else:
                 self.groups[key] = [data[self.value]]
+                if self.track_prov:
+                    self.output_to_inputs[key] = [tups[i]]
 
     # Create our new output tuples from group stats
     def __create_tuples_from_stats(self):
@@ -651,7 +729,26 @@ class GroupBy(Operator):
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        
+        tuple_lineage = []
+        if self.pull:
+            inp_tuples = self.__map_outputs_to_inputs(tuples)
+            for inp in self.inputs:
+                tuple_lineage += inp.lineage(inp_tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+
+            tuple_lineage = self.__map_outputs_to_inputs(tuple_lineage)
+        
+        return tuple_lineage
+
+    def __map_outputs_to_inputs(self, tuples):
+        inp_tuples = []
+        for tup in tuples:
+            inp_tuples += self.output_to_inputs[tup.tuple[0]]
+        return inp_tuples
+        
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
@@ -723,6 +820,8 @@ class Histogram(Operator):
         
         self.batch_size = BATCH_SIZE
 
+        self.output_to_inputs = dict()
+
     # Returns histogram (or None if done)
     def get_next(self):
         # YOUR CODE HERE
@@ -745,8 +844,12 @@ class Histogram(Operator):
 
             if key in self.buckets:
                 self.buckets[key] += 1
+                if self.track_prov:
+                    self.output_to_inputs[key].append(tups[i])
             else:
                 self.buckets[key] = 1
+                if self.track_prov:
+                    self.output_to_inputs[key] = [tups[i]]
 
     # Create our new output tuples from group stats
     def __create_tuples_from_stats(self):
@@ -773,6 +876,29 @@ class Histogram(Operator):
 
         # Return None if done
         return None if finished else tups      
+
+    # Returns the lineage of the given tuples
+    def lineage(self, tuples):
+        # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
+        
+        tuple_lineage = []
+        if self.pull:
+            inp_tuples = self.__map_outputs_to_inputs(tuples)
+            for inp in self.inputs:
+                tuple_lineage += inp.lineage(inp_tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+
+            tuple_lineage = self.__map_outputs_to_inputs(tuple_lineage)
+            
+        return tuple_lineage
+
+    def __map_outputs_to_inputs(self, tuples):
+        inp_tuples = []
+        for tup in tuples:
+            inp_tuples += self.output_to_inputs[tup.tuple[0]]
+        return inp_tuples
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
@@ -884,7 +1010,15 @@ class OrderBy(Operator):
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        tuple_lineage = []
+        if self.pull:
+            for inp in self.inputs:
+                tuple_lineage += inp.lineage(tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+        
+        return tuple_lineage
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
@@ -996,7 +1130,15 @@ class TopK(Operator):
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        pass
+        tuple_lineage = []
+        if self.pull:
+            for inp in self.inputs:
+                tuple_lineage += inp.lineage(tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+        
+        return tuple_lineage
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
@@ -1092,12 +1234,25 @@ class Select(Operator):
     def __select(self, tups):
         selected = []
         for tup in tups:
-            # TODO: Recreate ATuple here with new operator
             # If tuple satisfies predicate, add to output
             if self.predicate(tup):
-                selected.append(tup)
+                selected.append(ATuple(tup.tuple, None, self))
 
         return selected
+
+    # Returns the lineage of the given tuples
+    def lineage(self, tuples):
+        # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
+        
+        tuple_lineage = []
+        if self.pull:
+            for inp in self.inputs:
+                tuple_lineage += inp.lineage(tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.lineage(tuples)
+        
+        return tuple_lineage
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
@@ -1165,6 +1320,19 @@ class Sink(Operator):
         self.batches = self.batches[1:] if len(self.batches) > 1 else None
         return next_batch
 
+    # Returns the lineage of the given tuples
+    def lineage(self, tuples, is_start=False):
+        # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
+        
+        if is_start:
+            tuple_lineage = []
+            for inp in self.start_scans:
+                tuple_lineage += inp.lineage(tuples)
+        else:
+            tuple_lineage = tuples
+        
+        return tuple_lineage
+
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
         # Store all pushed tuples
@@ -1180,6 +1348,22 @@ def output_to_csv(csv_fname, col_names, root_op):
         while next is not None:
             writer.writerows([x.tuple for x in next])
             next = root_op.get_next()
+
+
+def get_lineage(root_op):
+    tuples = []
+    next = root_op.get_next()
+    while next is not None:
+        tuples += next
+        next = root_op.get_next()
+
+    logger.debug('Tuples:{}'.format(tuples))
+    
+    lineage = []
+    for tuple in tuples:
+        lineage.append(tuple.lineage())
+
+    print(lineage)
 
 
 def process_query1(ff, mf, uid, mid, pull):
@@ -1236,22 +1420,27 @@ def process_query2(ff, mf, uid, mid, pull):
 
     # YOUR CODE HERE
     if pull:
-        sc1 = Scan(ff, None)
-        sc2 = Scan(mf, None)
+        sc1 = Scan(ff, None, track_prov=True)
+        sc2 = Scan(mf, None, track_prov=True)
 
-        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid)
+        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid, track_prov=True)
 
-        join = Join([se1], [sc2], None, 1, 0)
-        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x))
+        join = Join([se1], [sc2], None, 1, 0, track_prov=True)
+        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x), track_prov=True)
 
-        order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False)
-        limit = TopK([order], None, 1)
+        order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False, track_prov=True)
+        limit = TopK([order], None, 1, track_prov=True)
 
-        project = Project([limit], None, [0])
+        project = Project([limit], None, [0], track_prov=True)
 
-        output_to_csv(args.output, ["#", "MID"], project)
+        get_lineage(project)
+
+        # output_to_csv(args.output, ["#", "MID"], project)
 
     else:
+        # TODO: Join input_side
+        # TODO: adjust track_prov
+        # TODO: get_lineage
         sink = Sink(pull=pull)
 
         project = Project(None, [sink], [0], pull=pull)
