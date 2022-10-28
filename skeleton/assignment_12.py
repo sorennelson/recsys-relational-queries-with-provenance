@@ -14,6 +14,7 @@ import uuid
 import argparse
 import ray
 import pandas as pd
+import copy
 
 # Note (john): Make sure you use Python's logger to log
 #              information about your program
@@ -46,24 +47,137 @@ class ATuple:
         self.operator = operator
 
     # Returns the lineage of self
-    def lineage(self) -> List[ATuple]:
+    def lineage(self, is_start=False) -> List[ATuple]:
         # YOUR CODE HERE (ONLY FOR TASK 1 IN ASSIGNMENT 2)
-        return self.operator.lineage([self])
+        if is_start:
+            return self.operator.lineage([self], is_start)
+        else:
+            return self.operator.lineage([self])
 
     # Returns the Where-provenance of the attribute at index 'att_index' of self
-    def where(self, att_index) -> List[Tuple]:
+    def where(self, att_index, is_start) -> List[Tuple]:
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+        # return self.operator.where(att_index, [self])
+        if is_start:
+            return self.operator.where(att_index, [self], is_start)
+        else:
+            return self.operator.where(att_index, [self])
 
     # Returns the How-provenance of self
     def how(self) -> string:
         # YOUR CODE HERE (ONLY FOR TASK 3 IN ASSIGNMENT 2)
-        pass
+        return self.metadata
 
     # Returns the input tuples with responsibility \rho >= 0.5 (if any)
-    def responsible_inputs(self) -> List[Tuple]:
+    def responsible_inputs(self, orderby, scans) -> List[Tuple]:
         # YOUR CODE HERE (ONLY FOR TASK 4 IN ASSIGNMENT 2)
-        pass
+
+        # Query specific for the time being, assumes avg, order-by, limit 1
+        assert self.metadata[:5] == 'AVG( '
+        
+        items = self.__parse_metadata()
+        responsible_inputs = []
+
+        checked = set()
+        for item in items:
+            _, tups = item
+            for tup in tups:
+                if tup in checked:
+                    continue
+                checked.add(tup)
+                responsibility = 0
+
+                # Check if counterfactual - responsibility 1
+                new_avgs, counterfactual, avg_items = self.__is_counterfactual(
+                                                                orderby, 
+                                                                tup, 
+                                                                orderby.sorted_tups)
+                if counterfactual:
+                    responsibility = 1
+                    responsible_inputs.append((tup, responsibility))
+                    break
+
+                # Check contingency set size 1 counterfactual - responsibility 0.5
+                contingency_checked = set([tup])
+
+                for contingency_item in items:
+                    _, contingency_tups = contingency_item
+                    for contingency_tup in contingency_tups:
+                        if contingency_tup in contingency_checked:
+                            continue
+                        contingency_checked.add(contingency_tup)
+
+                        _, actual_cause, _ = self.__is_counterfactual(
+                                                        orderby, 
+                                                        contingency_tup, 
+                                                        new_avgs,
+                                                        avg_items)
+                        if actual_cause:
+                            responsibility = 0.5
+                            responsible_inputs.append((tup, responsibility))
+                            break
+                    
+                    if responsibility == 0.5:
+                        break
+
+        # Grab input tuples for each scan so we only need to scan each again once
+        input_tuples = dict()
+        for scan in scans:
+            ids = [inp[0] for inp in responsible_inputs if inp[0][0] == scan.fid]
+            input_tuples.update(scan.find_input_tuples(ids))
+
+        # Change ids in responsible_inputs to input tuple
+        for i in range(len(responsible_inputs)):
+            id = responsible_inputs[i][0]
+            responsible_inputs[i] = (input_tuples[id], responsibility)
+        
+        return responsible_inputs
+
+    def __is_counterfactual(self, orderby, tup, curr_set, all_avg_items=[]):
+        avgs = [*curr_set]
+        new_all_avg_items = []
+
+        for i, avg in enumerate(avgs):
+            # Either use metadata or if already adjusted then use items from previous round
+            avg_items = all_avg_items[i] if all_avg_items else avg.__parse_metadata()
+            new_avg_items, avg_item_vals = [], []
+            for avg_item in avg_items:
+                avg_tup_val, avg_tups = avg_item
+                remove = False
+                # 0 out all tups == tup
+                for avg_tup in avg_tups:
+                    if avg_tup == tup:
+                        remove = True
+                        break
+                if not remove:
+                    avg_item_vals.append(int(avg_tup_val))
+                    new_avg_items.append((avg_tup_val, avg_tups))
+            # Recompute avg
+            new_avg = sum(avg_item_vals)/len(avg_item_vals) if avg_item_vals else 0
+            avg.tuple = (avg.tuple[0], new_avg)
+            new_all_avg_items.append(new_avg_items)
+        
+        # Re-sort
+        new_sorting = sorted(avgs, key=orderby.comparator, reverse=not orderby.ASC)
+        # If sorting order changed then the tuple is a counteractual for curr_set
+        counterfactual = new_sorting[0].metadata != orderby.sorted_tups[0].metadata
+        return avgs, counterfactual, new_all_avg_items
+
+    def __parse_metadata(self):
+        metadata = self.metadata[5:-2]
+        items = metadata.split(', ')
+        return [self.__parse_metadata_item(i) for i in items]
+        
+    def __parse_metadata_item(self, item):
+        val = item[1:-1].split('@')[-1]
+        rest = item[1:-1].split('@')[0]
+        if '*' in rest:
+            tups = [rest.split('*')[0], 
+                    rest.split('*')[1]]
+        else:
+            tups = [rest]
+        return (val, tups)
+
 
     # Print only the tuple
     def __repr__(self) -> str:
@@ -141,6 +255,7 @@ class Scan(Operator):
                  filepath,
                  outputs : List[Operator],
                  filter=None,
+                 table_name=None,
                  track_prov=False,
                  propagate_prov=False,
                  pull=True,
@@ -155,6 +270,9 @@ class Scan(Operator):
         self.fp = filepath
         self.outputs = outputs
         self.filter = filter
+        self.fname = self.fp.split('/')[-1]
+        self.fid = table_name[0].lower() if table_name else self.fname[0].lower()
+        self.lid = 1
 
         self.batch_size = BATCH_SIZE
         self.finished = False
@@ -188,7 +306,15 @@ class Scan(Operator):
 
     def _pd_to_tuples(self, df_batch):
         # [:-1] because of NAN column
-        return [ATuple(i[:-1], None, self) for i in list(df_batch.itertuples(index=False, name=None))]
+        tuples = []
+        for i in list(df_batch.itertuples(index=False, name=None)):
+            tuples.append(
+                ATuple(i[:-1], 
+                    '{}{}'.format(self.fid, self.lid) if self.propagate_prov else None, 
+                    self)
+                )
+            self.lid += 1
+        return tuples
 
     # Returns the lineage of the given tuples
     def lineage(self, tuples):
@@ -196,16 +322,96 @@ class Scan(Operator):
         if not self.pull:
             tuple_lineage = []
             for output in self.outputs:
-                tuple_lineage += output.lineage(tuples)
+                if self.join_output is None:
+                    tuple_lineage += output.lineage(tuples)
+                else:
+                    tuple_lineage += output.lineage(tuples, self.join_output)
+        else:
+            tuple_lineage = tuples
 
-        return tuples
+        return tuple_lineage
 
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
     def where(self, att_index, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+
+        if not self.pull:
+            tuple_lineage = []
+            for output in self.outputs:
+                if self.join_output is None:
+                    tuple_lineage += output.where(att_index, tuples)
+                else:
+                    tuple_lineage += output.where(att_index, tuples, self.join_output)
+            
+            if not tuple_lineage:
+                return []
+
+            # Update our att_index from upstream
+            att_index = tuple_lineage[0].tuple[1]
+
+            # Remove att_index from tuples
+            tuples = []
+            for tup in tuple_lineage:
+                tuples.append(
+                    ATuple(tup.tuple[0], tup.metadata, tup.operator)
+                )
+        
+        # Scan input to grab line_number
+        self.data = pd.read_csv(self.fp, chunksize=self.batch_size, sep=' ')
+        global_idx, input_tups = 1, []
+        tuple_data = [tup.tuple for tup in tuples]
+        while True:
+            try:
+                df_batch = self.data.get_chunk()                    
+                for tup in df_batch.itertuples(index=False, name=None):
+                    if tup[:-1] in tuple_data:
+                        file_name = self.fname
+                        data = (file_name, global_idx, tup[:-1], tup[att_index])
+                        input_tups.append(
+                            ATuple(data, None, self)
+                        )
+                    global_idx += 1
+            except:
+                break
+
+            tuple_lineage = input_tups
+
+        return tuple_lineage
+        # while True:
+        #     try:
+        #         df_batch = self.data.get_chunk()                    
+        #         for tup in df_batch.itertuples(index=False, name=None):
+        #             if tup[:-1] in tuple_data:
+        #                 file_name = self.fname
+        #                 data = (file_name, global_idx, tup[:-1], tup[att_index])
+        #                 tid = '{}{}'.format(self.fid, global_idx)
+        #                 input_tups[tid] = ATuple(data, None, self)
+        #             global_idx += 1
+        #     except:
+        #         break
+
+        # return input_tups
+
+    # Scans input to find tuples corresponding to tuple ids (e.g. r5)
+    def find_input_tuples(self, ids):
+        self.data = pd.read_csv(self.fp, chunksize=self.batch_size, sep=' ')
+        global_idx, input_tups = 1, dict()
+        lines = [int(id[1:]) for id in ids]
+        while True:
+            try:
+                df_batch = self.data.get_chunk()                    
+                for tup in df_batch.itertuples(index=False, name=None):
+                    if global_idx in lines:
+                        tid = '{}{}'.format(self.fid, global_idx)
+                        input_tups[tid] = ATuple(tup[:-1], None, self)
+                    global_idx += 1
+            except:
+                break
+
+        return input_tups
+
 
     # Starts the process of reading tuples (only for push-based evaluation)
     def start(self):
@@ -389,6 +595,7 @@ class Join(Operator):
     # Join a left and right tuple
     #   is_right: Probing with right
     def __join(self, hashed_tup, probe_tup, is_right):
+        metadata = ''
         # Remove join attribute from right tuple
         if is_right:
             right_data = [probe_tup.tuple[i] for i in range(len(probe_tup.tuple)) if i != self.right_join_attribute]
@@ -396,6 +603,8 @@ class Join(Operator):
 
             if self.track_prov:
                 self.left_tup_size = len(hashed_tup.tuple)
+            if self.propagate_prov:
+                metadata = '{}*{}'.format(hashed_tup.metadata, probe_tup.metadata)
 
         else:
             right_data = [hashed_tup.tuple[i] for i in range(len(hashed_tup.tuple)) if i != self.right_join_attribute]
@@ -403,9 +612,11 @@ class Join(Operator):
 
             if self.track_prov:
                 self.left_tup_size = len(probe_tup.tuple)
+            if self.propagate_prov:
+                metadata = '{}*{}'.format(probe_tup.metadata, hashed_tup.metadata)
             
 
-        return ATuple(joined_data, probe_tup.metadata, self)
+        return ATuple(joined_data, metadata, self)
 
     # Returns the lineage of the given tuples
     def lineage(self, tuples, is_right=False):
@@ -422,8 +633,7 @@ class Join(Operator):
         else:
             for output in self.outputs:
                 tuple_lineage += output.lineage(tuples)
-
-            l_inp_tuples, r_inp_tuples = self.__map_outputs_to_inputs(tuples)
+            l_inp_tuples, r_inp_tuples = self.__map_outputs_to_inputs(tuple_lineage)
             tuple_lineage = r_inp_tuples if is_right else l_inp_tuples
                 
         return tuple_lineage
@@ -434,16 +644,61 @@ class Join(Operator):
             l_inp_tuples += [ATuple(tup.tuple[:self.left_tup_size])]
 
             # Insert join attribute back into right tuple
-            right_data = list(tup.tuple[self.left_tup_size: self.left_tup_size+self.right_join_attribute]) + \
-                [tup.tuple[self.left_join_attribute]] + list(tup.tuple[self.left_tup_size+self.right_join_attribute:])
+            right_data = list(
+                            tup.tuple[self.left_tup_size: self.left_tup_size+self.right_join_attribute]) + \
+                            [tup.tuple[self.left_join_attribute]] + \
+                            list(tup.tuple[self.left_tup_size+self.right_join_attribute:]
+                            )
             r_inp_tuples += [ATuple(tuple(right_data))]
         return l_inp_tuples, r_inp_tuples
 
     # Returns the where-provenance of the attribute
     # at index 'att_index' for each tuple in 'tuples'
-    def where(self, att_index, tuples):
+    def where(self, att_index, tuples, is_right=False):
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+
+        tuple_lineage = []
+        if self.pull:
+            l_inp_tuples, r_inp_tuples = self.__map_outputs_to_inputs(tuples)
+
+            # L/R
+            if att_index < self.left_tup_size:
+                for inp in self.left_inputs:
+                    tuple_lineage += inp.where(att_index, l_inp_tuples)
+            else:
+                for inp in self.right_inputs:
+                    tuple_lineage += inp.where(att_index + 1 - self.left_tup_size, r_inp_tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.where(att_index, tuples)
+
+            # Remove att_index from tuple for mapping
+            output_lineage = []
+            for tup in tuple_lineage:
+                next_att_index = tup.tuple[1]
+                output_lineage.append(
+                    ATuple(tup.tuple[0], tup.metadata, tup.operator)
+                )
+
+            l_inp_tuples, r_inp_tuples = self.__map_outputs_to_inputs(output_lineage)
+
+            # Update att_index, return correct lineage to caller
+            if next_att_index >= self.left_tup_size:
+                next_att_index = next_att_index + 1 - self.left_tup_size
+                input_lineage = r_inp_tuples if is_right else []
+            else:
+                input_lineage = l_inp_tuples if not is_right else []
+
+            # Add att_index to tuple after mapping
+            tuple_lineage = []
+            for tup in input_lineage:
+                tuple_lineage.append(
+                    ATuple((tup.tuple, next_att_index), 
+                            tup.metadata, 
+                            tup.operator)
+                )
+                
+        return tuple_lineage
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple], is_right):
@@ -599,7 +854,38 @@ class Project(Operator):
     # at index 'att_index' for each tuple in 'tuples'
     def where(self, att_index, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+
+        tuple_lineage = []
+        if self.pull:
+            next_att_index = self.fields_to_keep[att_index]
+            inp_tuples = self.__map_outputs_to_inputs(tuples)
+            
+            for inp in self.inputs:
+                tuple_lineage += inp.where(next_att_index, inp_tuples)
+        else:   
+            for output in self.outputs:
+                tuple_lineage += output.where(att_index, tuples)
+
+            # Remove att_index from tuple for mapping
+            output_lineage = []
+            for tup in tuple_lineage:
+                next_att_index = self.fields_to_keep[tup.tuple[1]]
+                output_lineage.append(
+                    ATuple(tup.tuple[0], tup.metadata, tup.operator)
+                )
+                
+            input_lineage = self.__map_outputs_to_inputs(output_lineage)
+
+            # Add att_index to tuple after mapping
+            tuple_lineage = []
+            for tup in input_lineage:
+                tuple_lineage.append(
+                    ATuple((tup.tuple, next_att_index), 
+                            tup.metadata, 
+                            tup.operator)
+                )
+
+        return tuple_lineage
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
@@ -624,6 +910,7 @@ class GroupBy(Operator):
         key (int): The index of the key to group tuples.
         value (int): The index of the attribute we want to aggregate.
         agg_fun (function): The aggregation function.
+        agg_fun_name (string): The name of aggregation function (e.g. 'AVG')
         track_prov (bool): Defines whether to keep input-to-output
         mappings (True) or not (False).
         propagate_prov (bool): Defines whether to propagate provenance
@@ -640,6 +927,7 @@ class GroupBy(Operator):
                  key,
                  value,
                  agg_fun,
+                 agg_fun_name=None,
                  track_prov=False,
                  propagate_prov=False,
                  pull=True,
@@ -655,12 +943,15 @@ class GroupBy(Operator):
         self.key = key
         self.value = value
         self.agg_fun = agg_fun
-        self.groups = dict() # Stores {group: {sum: x, n: x}}
+        self.groups = dict()
         self.grouped = False
         
         self.batch_size = BATCH_SIZE
         
         self.output_to_inputs = dict()
+        self.agg_fun_name = agg_fun_name
+        if self.propagate_prov:
+            self.group_metadata = dict()
 
     # Returns aggregated value per distinct key in the input (or None if done)
     def get_next(self):
@@ -683,15 +974,22 @@ class GroupBy(Operator):
         for i in range(len(tups)):
             data = tups[i].tuple
             key = data[self.key] if self.key is not None else 'ALL'
+            if self.propagate_prov:
+                metadata = '{}@{}'.format(tups[i].metadata, data[self.value])
 
             if key in self.groups:
                 self.groups[key].append(data[self.value])
                 if self.track_prov:
                     self.output_to_inputs[key].append(tups[i])
+                if self.propagate_prov:
+                    self.group_metadata[key].append(metadata)
             else:
                 self.groups[key] = [data[self.value]]
                 if self.track_prov:
                     self.output_to_inputs[key] = [tups[i]]
+                if self.propagate_prov:
+                    
+                    self.group_metadata[key] = [metadata]
 
     # Create our new output tuples from group stats
     def __create_tuples_from_stats(self):
@@ -701,8 +999,16 @@ class GroupBy(Operator):
         
         tups, groups_to_remove = [], []
         for i, (group, stat) in enumerate(self.groups.items()):
-            tups.append(ATuple((group, self.agg_fun(stat),), 
-                                    None, self))
+            metadata = None
+            if self.propagate_prov:
+                tup_meta = '({})'.format('), ('.join(self.group_metadata[group]))
+                metadata = '{}( {} )'.format(self.agg_fun_name, tup_meta)
+
+            tups.append(
+                ATuple((group, self.agg_fun(stat),), 
+                        metadata, 
+                        self)
+                )
 
             groups_to_remove.append(group)
             if i == self.batch_size - 1: break
@@ -754,7 +1060,37 @@ class GroupBy(Operator):
     # at index 'att_index' for each tuple in 'tuples'
     def where(self, att_index, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+
+        tuple_lineage = []
+        if self.pull:
+            next_att_index = self.key if att_index == 1 else self.value
+            inp_tuples = self.__map_outputs_to_inputs(tuples)
+            for inp in self.inputs:
+                tuple_lineage += inp.where(next_att_index, inp_tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.where(att_index, tuples)
+
+            # Remove att_index from tuple for mapping
+            output_lineage = []
+            for tup in tuple_lineage:
+                next_att_index = self.key if tup.tuple[1] == 1 else self.value
+                output_lineage.append(
+                    ATuple(tup.tuple[0], tup.metadata, tup.operator)
+                )
+
+            input_lineage = self.__map_outputs_to_inputs(output_lineage)
+
+            # Add att_index to tuple after mapping
+            tuple_lineage = []
+            for tup in input_lineage:
+                tuple_lineage.append(
+                    ATuple((tup.tuple, next_att_index), 
+                            tup.metadata, 
+                            tup.operator)
+                )
+        
+        return tuple_lineage
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
@@ -993,6 +1329,8 @@ class OrderBy(Operator):
             self.tups.extend(tups)
             tups = self.__pull_input_tups()
         self.tups = sorted(self.tups, key=self.comparator, reverse=not self.ASC)
+        if self.propagate_prov:
+            self.sorted_tups = [*self.tups]
 
     # Pull batch of input tuples
     def __pull_input_tups(self):
@@ -1024,7 +1362,16 @@ class OrderBy(Operator):
     # at index 'att_index' for each tuple in 'tuples'
     def where(self, att_index, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+        
+        tuple_lineage = []
+        if self.pull:
+            for inp in self.inputs:
+                tuple_lineage += inp.where(att_index, tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.where(att_index, tuples)
+        
+        return tuple_lineage
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
@@ -1035,6 +1382,8 @@ class OrderBy(Operator):
             else:
                 self.loaded = True
                 self.tups = sorted(self.tups, key=self.comparator, reverse=not self.ASC)
+                if self.propagate_prov:
+                    self.sorted_tups = [*self.tups]
 
         if self.loaded:
             # Output first batch_size items
@@ -1144,7 +1493,15 @@ class TopK(Operator):
     # at index 'att_index' for each tuple in 'tuples'
     def where(self, att_index, tuples):
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        pass
+        tuple_lineage = []
+        if self.pull:
+            for inp in self.inputs:
+                tuple_lineage += inp.where(att_index, tuples)
+        else:
+            for output in self.outputs:
+                tuple_lineage += output.where(att_index, tuples)
+        
+        return tuple_lineage
 
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
@@ -1236,7 +1593,7 @@ class Select(Operator):
         for tup in tups:
             # If tuple satisfies predicate, add to output
             if self.predicate(tup):
-                selected.append(ATuple(tup.tuple, None, self))
+                selected.append(ATuple(tup.tuple, tup.metadata, self))
 
         return selected
 
@@ -1250,7 +1607,28 @@ class Select(Operator):
                 tuple_lineage += inp.lineage(tuples)
         else:
             for output in self.outputs:
-                tuple_lineage += output.lineage(tuples)
+                if self.join_output is None:
+                    tuple_lineage += output.lineage(tuples)
+                else:
+                    tuple_lineage += output.lineage(tuples, self.join_output)
+        
+        return tuple_lineage
+
+    # Returns the where-provenance of the attribute
+    # at index 'att_index' for each tuple in 'tuples'
+    def where(self, att_index, tuples):
+        # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
+
+        tuple_lineage = []
+        if self.pull:
+            for inp in self.inputs:
+                tuple_lineage += inp.where(att_index, tuples)
+        else:
+            for output in self.outputs:
+                if self.join_output is None:
+                    tuple_lineage += output.where(att_index, tuples)
+                else:
+                    tuple_lineage += output.where(att_index, tuples, self.join_output)
         
         return tuple_lineage
 
@@ -1333,9 +1711,32 @@ class Sink(Operator):
         
         return tuple_lineage
 
+    # Returns the where-provenance of the attribute
+    # at index 'att_index' for each tuple in 'tuples'
+    def where(self, att_index, tuples, is_start=False):
+        # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
+
+        if is_start:
+            tuple_lineage = []
+            for inp in self.start_scans:
+                tuple_lineage += inp.where(att_index, tuples)
+        else:
+            # Adjust tuples (tuple, att_index)
+            tuple_lineage = []
+            for tup in tuples:
+                tuple_lineage.append(
+                    ATuple((tup.tuple, att_index), 
+                            tup.metadata, 
+                            tup.operator)
+                )
+        
+        return tuple_lineage
+
     # Applies the operator logic to the given list of tuples
     def apply(self, tuples: List[ATuple]):
         # Store all pushed tuples
+        if tuples:
+            tuples = [ATuple(tup.tuple, tup.metadata, self) for tup in tuples]
         self.batches.append(tuples)
 
 # Using the root operation, pulls all input tuples and writes them to CSV
@@ -1349,21 +1750,60 @@ def output_to_csv(csv_fname, col_names, root_op):
             writer.writerows([x.tuple for x in next])
             next = root_op.get_next()
 
-
-def get_lineage(root_op):
+# Using the root operation, pulls all input tuples
+def process_query(root_op):
     tuples = []
     next = root_op.get_next()
     while next is not None:
         tuples += next
         next = root_op.get_next()
 
-    logger.debug('Tuples:{}'.format(tuples))
-    
+    logger.debug('Output Tuples:{}'.format(tuples))
+
+    return tuples
+
+# TODO: Documentation
+def get_lineage(root_op, pull):
+    tuples = process_query(root_op)
+
+    # Gather lineage for tuples
     lineage = []
     for tuple in tuples:
-        lineage.append(tuple.lineage())
+        lineage.append(tuple.lineage(is_start=not pull))
 
-    print(lineage)
+    logger.debug('Lineage:{}'.format(lineage))
+
+# TODO: Documentation
+def get_where(root_op, pull):
+    tuples = process_query(root_op)
+
+    # Gather where for tuples
+    where = []
+    for tuple in tuples:
+        where.append(tuple.where(0, is_start=not pull))
+
+    logger.debug('Where:{}'.format(where))
+
+
+def get_how(root_op):
+    tuples = process_query(root_op)
+
+    # Gather how for tuples
+    how = []
+    for tuple in tuples:
+        how.append(tuple.how())
+
+    logger.debug('How:{}'.format(how))
+
+def get_responsibility(root_op, order, scans):
+    tuples = process_query(root_op)
+
+    # Gather responsibility for tuples
+    resp = []
+    for tuple in tuples:
+        resp.append(tuple.responsible_inputs(order, scans))
+
+    logger.debug('Responsible Inputs:{}'.format(resp))
 
 
 def process_query1(ff, mf, uid, mid, pull):
@@ -1420,47 +1860,54 @@ def process_query2(ff, mf, uid, mid, pull):
 
     # YOUR CODE HERE
     if pull:
-        sc1 = Scan(ff, None, track_prov=True)
-        sc2 = Scan(mf, None, track_prov=True)
+        sc1 = Scan(ff, None, table_name='Friends', track_prov=True, propagate_prov=True)
+        sc2 = Scan(mf, None, table_name='Ratings', track_prov=True, propagate_prov=True)
 
-        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid, track_prov=True)
+        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid, track_prov=True, propagate_prov=True)
 
-        join = Join([se1], [sc2], None, 1, 0, track_prov=True)
-        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x), track_prov=True)
+        join = Join([se1], [sc2], None, 1, 0, track_prov=True, propagate_prov=True)
+        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x), agg_fun_name='AVG', track_prov=True, propagate_prov=True)
 
-        order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False, track_prov=True)
-        limit = TopK([order], None, 1, track_prov=True)
+        order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False, track_prov=True, propagate_prov=True)
+        limit = TopK([order], None, 1, track_prov=True, propagate_prov=True)
 
-        project = Project([limit], None, [0], track_prov=True)
-
-        get_lineage(project)
+        project = Project([limit], None, [0], track_prov=True, propagate_prov=True)
 
         # output_to_csv(args.output, ["#", "MID"], project)
+        # get_lineage(project, pull=True)
+        # get_where(project, pull=True)
+        # get_how(project)
+        get_responsibility(project, order, [sc1, sc2])
 
     else:
-        # TODO: Join input_side
-        # TODO: adjust track_prov
-        # TODO: get_lineage
-        sink = Sink(pull=pull)
+        sink = Sink(pull=pull, track_prov=True, propagate_prov=True)
 
-        project = Project(None, [sink], [0], pull=pull)
-        limit = TopK(None, [project], 1, pull=pull)
+        project = Project(None, [sink], [0], pull=pull, track_prov=True, propagate_prov=True)
+        limit = TopK(None, [project], 1, pull=pull, track_prov=True, propagate_prov=True)
 
-        order = OrderBy(None, [limit], lambda x: x.tuple[1], ASC=False, pull=pull)
+        order = OrderBy(None, [limit], lambda x: x.tuple[1], ASC=False, 
+                        pull=pull, track_prov=True, propagate_prov=True)
 
-        avg = GroupBy(None, [order], 2, 3, lambda x: sum(x) / len(x), pull=pull)
-        join = Join(None, None, [avg], 1, 0, pull=pull)
+        avg = GroupBy(None, [order], 2, 3, lambda x: sum(x) / len(x), 
+                        agg_fun_name='AVG',
+                        pull=pull, track_prov=True, propagate_prov=True)
+        join = Join(None, None, [avg], 1, 0, pull=pull, track_prov=True, propagate_prov=True)
 
-        se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
+        se1 = Select(None, [join], lambda x: x.tuple[0] == uid, 
+                        pull=pull, track_prov=True, propagate_prov=True)
         se1.set_join_output_side(is_right=False)
 
-        sc1 = Scan(ff, [se1], pull=pull)
-        sc2 = Scan(mf, [join], pull=pull)
+        sc1 = Scan(ff, [se1], table_name='Friends', pull=pull, track_prov=True, propagate_prov=True)
+        sc2 = Scan(mf, [join], table_name='Ratings', pull=pull, track_prov=True, propagate_prov=True)
         sc2.set_join_output_side(is_right=True)
 
         sink.set_start_scans([sc1, sc2])
 
-        output_to_csv(args.output, ["#", "MID"], sink)
+        # output_to_csv(args.output, ["#", "MID"], sink)
+        # get_lineage(sink, pull=False)
+        # get_where(sink, pull=False)
+        # get_how(sink)
+        get_responsibility(sink, order, [sc1, sc2])
 
 def process_query3(ff, mf, uid, mid, pull):
     # TASK 3: Implement explanation query for User A and Movie M
@@ -1525,14 +1972,13 @@ if __name__ == "__main__":
     else:
         logger.error("Only queries 1/2/3 implemented")
 
-    # TODO:
-    # TASK 4: Turn your data operators into Ray actors
-    #
-    # NOTE (john): Add your changes for Task 4 to a new git branch 'ray'
-    # Select/Join/Group By
-
-
     logger.info("Assignment #2")
+
+    # TODO:
+        # Input/output
+        # Comments
+        # Query 1
+        # Tests
 
     # TASK 1: Implement lineage query for movie recommendation
 
