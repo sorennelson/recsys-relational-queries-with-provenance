@@ -379,20 +379,6 @@ class Scan(Operator):
             tuple_lineage = input_tups
 
         return tuple_lineage
-        # while True:
-        #     try:
-        #         df_batch = self.data.get_chunk()                    
-        #         for tup in df_batch.itertuples(index=False, name=None):
-        #             if tup[:-1] in tuple_data:
-        #                 file_name = self.fname
-        #                 data = (file_name, global_idx, tup[:-1], tup[att_index])
-        #                 tid = '{}{}'.format(self.fid, global_idx)
-        #                 input_tups[tid] = ATuple(data, None, self)
-        #             global_idx += 1
-        #     except:
-        #         break
-
-        # return input_tups
 
     # Scans input to find tuples corresponding to tuple ids (e.g. r5)
     def find_input_tuples(self, ids):
@@ -1063,7 +1049,7 @@ class GroupBy(Operator):
 
         tuple_lineage = []
         if self.pull:
-            next_att_index = self.key if att_index == 1 else self.value
+            next_att_index = self.key if att_index == 0 else self.value
             inp_tuples = self.__map_outputs_to_inputs(tuples)
             for inp in self.inputs:
                 tuple_lineage += inp.where(next_att_index, inp_tuples)
@@ -1074,7 +1060,7 @@ class GroupBy(Operator):
             # Remove att_index from tuple for mapping
             output_lineage = []
             for tup in tuple_lineage:
-                next_att_index = self.key if tup.tuple[1] == 1 else self.value
+                next_att_index = self.key if tup.tuple[1] == 0 else self.value
                 output_lineage.append(
                     ATuple(tup.tuple[0], tup.metadata, tup.operator)
                 )
@@ -1750,6 +1736,10 @@ def output_to_csv(csv_fname, col_names, root_op):
             writer.writerows([x.tuple for x in next])
             next = root_op.get_next()
 
+def output_to_pdf(fname, tuples):
+    with open(fname, mode='w') as file:
+        file.write(str(tuples))
+
 # Using the root operation, pulls all input tuples
 def process_query(root_op):
     tuples = []
@@ -1762,51 +1752,42 @@ def process_query(root_op):
 
     return tuples
 
-# TODO: Documentation
-def get_lineage(root_op, pull):
+def get_lineage(fname, root_op, pull, lineage):
     tuples = process_query(root_op)
+    assert len(tuples) > lineage
 
-    # Gather lineage for tuples
-    lineage = []
-    for tuple in tuples:
-        lineage.append(tuple.lineage(is_start=not pull))
+    output = tuples[lineage].lineage(is_start=not pull)
+    logger.debug('Lineage:{}'.format(output))
+    output_to_pdf(fname, output)
 
-    logger.debug('Lineage:{}'.format(lineage))
-
-# TODO: Documentation
-def get_where(root_op, pull):
+def get_where(fname, root_op, pull, where_row, where_attr):
     tuples = process_query(root_op)
+    assert len(tuples) > where_row
+    
+    output = tuples[where_row].where(where_attr, is_start=not pull)
+    logger.debug('Where:{}'.format(output))
+    output_to_pdf(fname, output)
 
-    # Gather where for tuples
-    where = []
-    for tuple in tuples:
-        where.append(tuple.where(0, is_start=not pull))
-
-    logger.debug('Where:{}'.format(where))
-
-
-def get_how(root_op):
+def get_how(fname, root_op, how):
     tuples = process_query(root_op)
+    assert len(tuples) > how
 
-    # Gather how for tuples
-    how = []
-    for tuple in tuples:
-        how.append(tuple.how())
+    output = tuples[how].how()
+    logger.debug('How:{}'.format(output))
+    output_to_pdf(fname, output)
 
-    logger.debug('How:{}'.format(how))
-
-def get_responsibility(root_op, order, scans):
+def get_responsibility(fname, root_op, order, scans, responsibility):
     tuples = process_query(root_op)
+    assert len(tuples) > responsibility
 
-    # Gather responsibility for tuples
-    resp = []
-    for tuple in tuples:
-        resp.append(tuple.responsible_inputs(order, scans))
-
-    logger.debug('Responsible Inputs:{}'.format(resp))
+    output = tuples[responsibility].responsible_inputs(order, scans)
+    logger.debug('Responsible Inputs:{}'.format(output))
+    output_to_pdf(fname, output)
 
 
-def process_query1(ff, mf, uid, mid, pull):
+def process_query1(ff, mf, uid, mid, pull, 
+                where_row=-1, 
+                where_attr=-1):
     # TASK 1: Implement 'likeness' prediction query for User A and Movie M
     #
     # SELECT AVG(R.Rating)
@@ -1814,39 +1795,45 @@ def process_query1(ff, mf, uid, mid, pull):
     # WHERE F.UID2 = R.UID
     #       AND F.UID1 = 'A'
     #       AND R.MID = 'M'
+    tp = where_row > -1
 
     # YOUR CODE HERE
     if pull:
-        sc1 = Scan(ff, None)
-        sc2 = Scan(mf, None)
+        sc1 = Scan(ff, None, track_prov=tp)
+        sc2 = Scan(mf, None, track_prov=tp)
 
-        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid)
-        se2 = Select([sc2], None, lambda x: x.tuple[1] == mid)
+        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid, track_prov=tp)
+        se2 = Select([sc2], None, lambda x: x.tuple[1] == mid, track_prov=tp)
 
-        join = Join([se1], [se2], None, 1, 0)
-        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x))
-        project = Project([avg], None, [1], pull=pull)
-
-        output_to_csv(args.output, ["#", "likeness"], project)
+        join = Join([se1], [se2], None, 1, 0, track_prov=tp)
+        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x), track_prov=tp)
+        root_op = Project([avg], None, [1], pull=pull, track_prov=tp)
 
     else:
-        sink = Sink(pull=pull)
-        project = Project(None, [sink], [1], pull=pull)
-        avg = GroupBy(None, [project], 2, 3, lambda x: sum(x) / len(x), pull=pull) 
-        join = Join(None, None, [avg], 1, 0, pull=pull)
+        sink = Sink(pull=pull, track_prov=tp)
+        project = Project(None, [sink], [1], pull=pull, track_prov=tp)
+        avg = GroupBy(None, [project], 2, 3, lambda x: sum(x) / len(x), pull=pull, track_prov=tp) 
+        join = Join(None, None, [avg], 1, 0, pull=pull, track_prov=tp)
 
-        se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull)
+        se1 = Select(None, [join], lambda x: x.tuple[0] == uid, pull=pull, track_prov=tp)
         se1.set_join_output_side(is_right=False)
-        se2 = Select(None, [join], lambda x: x.tuple[1] == mid, pull=pull)
+        se2 = Select(None, [join], lambda x: x.tuple[1] == mid, pull=pull, track_prov=tp)
         se2.set_join_output_side(is_right=True)
 
-        sc1 = Scan(ff, [se1], pull=pull)
-        sc2 = Scan(mf, [se2], pull=pull)
+        sc1 = Scan(ff, [se1], pull=pull, track_prov=tp)
+        sc2 = Scan(mf, [se2], pull=pull, track_prov=tp)
 
         sink.set_start_scans([sc1, sc2])
-        output_to_csv(args.output, ["#", "likeness"], sink)
+        root_op = sink
 
-def process_query2(ff, mf, uid, mid, pull):
+    if where_row == -1:
+        output_to_csv(args.output, ["#", "likeness"], root_op)
+    else:
+        get_where(args.output, root_op, pull, where_row, where_attr)
+
+def process_query2(ff, mf, uid, mid, pull,
+                lineage=-1, how=-1, 
+                responsibility=-1):
     # TASK 2: Implement recommendation query for User A
     #
     # SELECT R.MID
@@ -1858,56 +1845,63 @@ def process_query2(ff, mf, uid, mid, pull):
     #        ORDER BY score DESC
     #        LIMIT 1 )
 
+    tp = lineage > -1
+    pp = how > -1 or responsibility > -1
+
     # YOUR CODE HERE
     if pull:
-        sc1 = Scan(ff, None, table_name='Friends', track_prov=True, propagate_prov=True)
-        sc2 = Scan(mf, None, table_name='Ratings', track_prov=True, propagate_prov=True)
+        sc1 = Scan(ff, None, table_name='Friends', track_prov=tp, propagate_prov=pp)
+        sc2 = Scan(mf, None, table_name='Ratings', track_prov=tp, propagate_prov=pp)
 
-        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid, track_prov=True, propagate_prov=True)
+        se1 = Select([sc1], None, lambda x: x.tuple[0] == uid, track_prov=tp, propagate_prov=pp)
 
-        join = Join([se1], [sc2], None, 1, 0, track_prov=True, propagate_prov=True)
-        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x), agg_fun_name='AVG', track_prov=True, propagate_prov=True)
+        join = Join([se1], [sc2], None, 1, 0, track_prov=tp, propagate_prov=pp)
+        avg = GroupBy([join], None, 2, 3, lambda x: sum(x) / len(x), agg_fun_name='AVG', track_prov=tp, propagate_prov=pp)
 
-        order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False, track_prov=True, propagate_prov=True)
-        limit = TopK([order], None, 1, track_prov=True, propagate_prov=True)
+        order = OrderBy([avg], None, lambda x: x.tuple[1], ASC=False, track_prov=tp, propagate_prov=pp)
+        limit = TopK([order], None, 1, track_prov=tp, propagate_prov=pp)
 
-        project = Project([limit], None, [0], track_prov=True, propagate_prov=True)
-
-        # output_to_csv(args.output, ["#", "MID"], project)
-        # get_lineage(project, pull=True)
-        # get_where(project, pull=True)
-        # get_how(project)
-        get_responsibility(project, order, [sc1, sc2])
+        root_op = Project([limit], None, [0], 
+                        track_prov=tp, propagate_prov=pp)
 
     else:
-        sink = Sink(pull=pull, track_prov=True, propagate_prov=True)
+        sink = Sink(pull=pull, track_prov=tp, propagate_prov=pp)
 
-        project = Project(None, [sink], [0], pull=pull, track_prov=True, propagate_prov=True)
-        limit = TopK(None, [project], 1, pull=pull, track_prov=True, propagate_prov=True)
+        project = Project(None, [sink], [0], pull=pull, track_prov=tp, propagate_prov=pp)
+        limit = TopK(None, [project], 1, pull=pull, track_prov=tp, propagate_prov=pp)
 
         order = OrderBy(None, [limit], lambda x: x.tuple[1], ASC=False, 
-                        pull=pull, track_prov=True, propagate_prov=True)
+                        pull=pull, track_prov=tp, propagate_prov=pp)
 
         avg = GroupBy(None, [order], 2, 3, lambda x: sum(x) / len(x), 
                         agg_fun_name='AVG',
-                        pull=pull, track_prov=True, propagate_prov=True)
-        join = Join(None, None, [avg], 1, 0, pull=pull, track_prov=True, propagate_prov=True)
+                        pull=pull, track_prov=tp, propagate_prov=pp)
+        join = Join(None, None, [avg], 1, 0, pull=pull, track_prov=tp, propagate_prov=pp)
 
         se1 = Select(None, [join], lambda x: x.tuple[0] == uid, 
-                        pull=pull, track_prov=True, propagate_prov=True)
+                        pull=pull, track_prov=tp, propagate_prov=pp)
         se1.set_join_output_side(is_right=False)
 
-        sc1 = Scan(ff, [se1], table_name='Friends', pull=pull, track_prov=True, propagate_prov=True)
-        sc2 = Scan(mf, [join], table_name='Ratings', pull=pull, track_prov=True, propagate_prov=True)
+        sc1 = Scan(ff, [se1], table_name='Friends', pull=pull, track_prov=tp, propagate_prov=pp)
+        sc2 = Scan(mf, [join], table_name='Ratings', pull=pull, track_prov=tp, propagate_prov=pp)
         sc2.set_join_output_side(is_right=True)
 
         sink.set_start_scans([sc1, sc2])
+        root_op = sink
 
-        # output_to_csv(args.output, ["#", "MID"], sink)
-        # get_lineage(sink, pull=False)
-        # get_where(sink, pull=False)
-        # get_how(sink)
-        get_responsibility(sink, order, [sc1, sc2])
+    # Typical output
+    if lineage == -1 and how == -1 and responsibility == -1:
+        output_to_csv(args.output, ["#", "MID"], sink)
+    elif lineage > -1:
+        get_lineage(args.output, root_op, pull=pull, lineage=lineage)
+    elif how > -1:
+        get_how(args.output, root_op, how=how)
+    elif responsibility > -1:
+        get_responsibility(args.output, root_op, order, [sc1, sc2], responsibility=responsibility)
+
+    # get_where(root_op, pull=False)
+
+    # get_where(project, pull=True)
 
 def process_query3(ff, mf, uid, mid, pull):
     # TASK 3: Implement explanation query for User A and Movie M
@@ -1959,14 +1953,23 @@ if __name__ == "__main__":
     parser.add_argument('--mid', type=int, default=0, help='mid.')
     parser.add_argument('--pull', type=int, default=1, help='0/1 - 0 Push, 1 Pull')
     parser.add_argument('--output', type=str, default='../data/output.txt', help='File path.')
+
+    parser.add_argument('--lineage', type=int, default=-1, help='The index of the tuple in the result to find the lineage')
+    parser.add_argument('--where-row', type=int, default=-1, help='The index of the tuple in the result to find the where provenance')
+    parser.add_argument('--where-attribute', type=int, default=-1, help='The index of the attribute to find the where provenance')
+    parser.add_argument('--how', type=int, default=-1, help='The index of the tuple in the result to find the how provenance')
+    parser.add_argument('--responsibility', type=int, default=-1, help='The index of the tuple in the result to find the responsibility')
+
     args = parser.parse_args()
 
     logger.info("Assignment #1")
 
     if args.query == 1:
-        process_query1(args.ff, args.mf, args.uid, args.mid, args.pull==1)
+        process_query1(args.ff, args.mf, args.uid, args.mid, args.pull==1,
+                    where_row=args.where_row, where_attr=args.where_attribute)
     elif args.query == 2:
-        process_query2(args.ff, args.mf, args.uid, args.mid, args.pull==1)
+        process_query2(args.ff, args.mf, args.uid, args.mid, args.pull==1,
+                    lineage=args.lineage, how=args.how, responsibility=args.responsibility)
     elif args.query == 3:
         process_query3(args.ff, args.mf, args.uid, args.mid, args.pull==1)
     else:
