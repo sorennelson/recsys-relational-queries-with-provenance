@@ -57,7 +57,6 @@ class ATuple:
     # Returns the Where-provenance of the attribute at index 'att_index' of self
     def where(self, att_index, is_start) -> List[Tuple]:
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        # return self.operator.where(att_index, [self])
         if is_start:
             return self.operator.where(att_index, [self], is_start)
         else:
