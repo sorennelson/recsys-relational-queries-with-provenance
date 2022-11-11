@@ -17,12 +17,12 @@ class CNN_Data(Dataset):
             csv_dir (str): The path to the CSV file that contains the MRI metadata.
         '''
         # YOUR CODE HERE 
-        pass
+        self.files, self.labels = read_csv(csv_dir)
 
     # Returns total number of data samples
     def __len__(self):
         # YOUR CODE HERE 
-        pass
+        return len(self.files)
 
     # Returns the actual MRI data, the MRI filename, and the label
     def __getitem__(self, idx):
@@ -31,7 +31,10 @@ class CNN_Data(Dataset):
             idx (int): The sample MRI index.
         '''
         # YOUR CODE HERE 
-        pass
+        filename = self.files[idx]
+        x = np.load(filename)
+        y = self.labels[idx]
+        return x, filename, y
 
 # This is a helper function that performs the following steps:
 #   1. Retrieves the metadata for the 19 MRIs provided 
@@ -47,7 +50,25 @@ def split_csv(csv_file, output_folder='./ADNI3', random_seed = 1051):
         random_seed (int): The seed number to shuffle the csv_file (you can also define your own seed).
     '''
     # YOUR CODE HERE 
-    pass
+    df = pd.read_csv(csv_file)
+    path = '/'.join(csv_file.split('/')[:-1])
+    files = df['filename']
+    fp = ['{}/{}'.format(path, f) for f in files]
+    
+    # Shuffle
+    np.random.seed(random_seed)
+    idxs = [i for i in range(len(fp)) if os.path.isfile(fp[i])]
+    np.random.shuffle(idxs)
+
+    # Split train/test
+    n_test = 5
+    df_test = df.iloc[idxs[:n_test]]
+    df_bg = df.iloc[idxs[n_test:]]
+
+    # Create CSVs
+    df_test.to_csv(output_folder + '/test.csv')
+    df_bg.to_csv(output_folder + '/bg.csv')
+
 
 # Returns one list containing the MRI filepaths and a second list with the respective labels
 def read_csv(filename):
@@ -56,7 +77,13 @@ def read_csv(filename):
         filename (str): The path to the CSV file that contains the MRI metadata.
     '''
     # YOUR CODE HERE 
-    pass
+    df = pd.read_csv(filename)
+    path = '/'.join(filename.split('/')[:-1])
+    files = df['filename']
+    filepaths = ['{}/{}'.format(path, f) for f in files]
+    labels = list(df['AD'])
+
+    return filepaths, labels
 
 # Regions inside a segmented brain MRI (ONLY FOR TASK IV)
 brain_regions = {1.:'TL hippocampus R',
