@@ -91,15 +91,15 @@ def create_SHAP_values(model, bg_loader, test_loader, mri_count, save_path):
         save_path (str): The path to save the generated SHAP values (as .npy files).
     '''
     # Create Tensor of background/test data
-    full_bg = __create_SHAP_ds(bg_loader, min(mri_count, 5))
-    bg = __create_SHAP_ds(bg_loader, min(mri_count, len(full_bg)))
+    full_bg = __create_SHAP_ds(bg_loader, min(mri_count, 19))
+    bg = __create_SHAP_ds(bg_loader, min(mri_count, 5))
     test = __create_SHAP_ds(test_loader, min(mri_count, 5))
 
     # Generate shap values
     model.eval()
-    de = shap.DeepExplainer(model, full_bg)
+    de = shap.DeepExplainer(model, bg)
     test_shap_vals = de.shap_values(test)
-    bg_shap_vals = de.shap_values(bg)
+    bg_shap_vals = de.shap_values(full_bg)
     return test_shap_vals, bg_shap_vals
 
 # Save shap vals for correct predictions
@@ -342,6 +342,6 @@ if __name__ == '__main__':
 
         # Output
         ad_df = pd.DataFrame(ad_global_region_avg, columns=['Region number', 'region', 'value'])
-        ad_df.to_csv('{}/top10/task-4-true.csv'.format(output_path), index=False)
+        ad_df.to_csv('{}/task-4-true.csv'.format(output_path), index=False)
         notad_df = pd.DataFrame(notad_global_region_avg, columns=['Region number', 'region', 'value'])
-        notad_df.to_csv('{}/top10/task-4-false.csv'.format(output_path), index=False)
+        notad_df.to_csv('{}/task-4-false.csv'.format(output_path), index=False)
