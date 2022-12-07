@@ -4,7 +4,7 @@ from scipy.stats import nct
 from scipy.linalg import solve_triangular
 import time as clock
 import random
-
+from opentelemetry import trace
 
 class Model:
     """
@@ -241,30 +241,32 @@ class MockModel(Model):
 
     # TODO: Trace this function
     def apply_model(self, data, times, top_left) -> bool:
-        grid_ts = data
-        times = times
-        top_left = top_left
-        # Convert time to days since 01/01/1970
-        start = date(1970, 1, 1)
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span("MockModel.apply_model"):
+            grid_ts = data
+            times = times
+            top_left = top_left
+            # Convert time to days since 01/01/1970
+            start = date(1970, 1, 1)
 
-        def str_to_date(a):
-            return (datetime.strptime(a, '%Y%m%d').date())
+            def str_to_date(a):
+                return (datetime.strptime(a, '%Y%m%d').date())
 
-        def date_to_days(a, start):
-            return (a - start).days
+            def date_to_days(a, start):
+                return (a - start).days
 
-        vstr_to_date = np.vectorize(str_to_date)
-        vdate_to_days = np.vectorize(date_to_days)
-        times = vstr_to_date(times)
-        times = vdate_to_days(times, start)
-        n = len(times)
-        results = np.empty([2, grid_ts.shape[1], grid_ts.shape[2]]).astype('float16')
-        for i in range(grid_ts.shape[1]):
-            print("Model application is %s percent complete" % (100 * float(i) / grid_ts.shape[1]))
-            for j in range(grid_ts.shape[2]):
-                y = grid_ts[:, i, j]
-                not_nans = (y != 0)
-                t = times[not_nans]
-                final_t = np.random.choice(t) if len(t) > 0 else 0
-                results[:, i, j] = [random.uniform(0,1), final_t]
-        return True
+            vstr_to_date = np.vectorize(str_to_date)
+            vdate_to_days = np.vectorize(date_to_days)
+            times = vstr_to_date(times)
+            times = vdate_to_days(times, start)
+            n = len(times)
+            results = np.empty([2, grid_ts.shape[1], grid_ts.shape[2]]).astype('float16')
+            for i in range(grid_ts.shape[1]):
+                print("Model application is %s percent complete" % (100 * float(i) / grid_ts.shape[1]))
+                for j in range(grid_ts.shape[2]):
+                    y = grid_ts[:, i, j]
+                    not_nans = (y != 0)
+                    t = times[not_nans]
+                    final_t = np.random.choice(t) if len(t) > 0 else 0
+                    results[:, i, j] = [random.uniform(0,1), final_t]
+            return True

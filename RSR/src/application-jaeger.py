@@ -30,7 +30,7 @@ if __name__ == '__main__':
     runtime_env = {"working_dir": "."}
     bound_box = BoundBox(12, 31, 12, 31)
     time_window = TimeWindow(1)
-    tracer = trace.get_tracer(__name__)
+    tracer = trace.get_tracer('RSR')
     with tracer.start_as_current_span("main-start"):
         ray.init(address="auto", runtime_env =runtime_env)
         global_timers = defaultdict(list)
