@@ -1,4 +1,6 @@
-# This repository contains solutions to the CS599 L1 assignments 
+# RecSys Relational Queries with Provenance
+
+> A Python relational operator library for push or pull-based pipeline and data parallel computing of recommender system queries with provenance tracking. Implemented as part of the User-Centric Systems for Data Science course at Boston University.
 
 ## Prerequisites for running queries:
 
@@ -26,22 +28,88 @@ The second file (ratings) must include records of the form:
 |231|54 |2     |
 |...|...|...   |
 
-## Running queries of Assignment 1
+## Assignment 1 - Main branch
 
-You can run queries as shown below: 
+### Likeness Prediction Query 
+> Predict how much user A will like movie M as the average ratings of A's friends.
 
-```bash
-$ python assignment_12.py --task [task_number] --friends [path_to_friends_file.txt] --ratings [path_to_ratings_file.txt] --uid [user_id] --mid [movie_id]
+Query:
+``` 
+SELECT AVG(R.Rating)
+FROM Friends as F, Ratings as R
+WHERE F.UID2 = R.UID
+    AND F.UID1 = 'A'
+    AND R.MID = 'M'
 ```
 
-For example, the following command runs the 'likeness prediction' query of the first task for user id 10 and movie id 3:
-
+Running:
 ```bash
-$ python assignment_12.py --task 1 --friends friends.txt --ratings ratings.txt --uid 10 --mid 3
+$ python assignment_12.py --query 1 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id] --mid [movie_id] --pull [0 Push-based / 1 Pull-based]
 ```
 
-The 'recommendation' query of the second task does not require a movie id. If you provide a `--mid` argument, it will be simply ignored.
+### Movie Recommendation Query 
+> Recommend to user A the movie with the highest likeness value.
 
-## Running queries of Assignment 2
+Query:
+``` 
+SELECT R.MID
+FROM ( SELECT R.MID, AVG(R.Rating) as score
+        FROM Friends as F, Ratings as R
+        WHERE F.UID2 = R.UID
+                AND F.UID1 = 'A'
+        GROUP BY R.MID
+        ORDER BY score DESC
+        LIMIT 1 )
+```
 
-TODO
+Running:
+```bash
+$ python assignment_12.py --query 2 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id] --pull [0 Push-based / 1 Pull-based]
+```
+
+### Explanation Query 
+> Explain the movie recommendation from the above query with a Histogram of user A's friends ratings.
+
+Query:
+``` 
+SELECT HIST(R.Rating) as explanation
+FROM Friends as F, Ratings as R
+WHERE F.UID2 = R.UID
+        AND F.UID1 = 'A'
+        AND R.MID = 'M'
+```
+
+Running:
+```bash
+$ python assignment_12.py --query 3 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id] --mid [movie_id] --pull [0 Push-based / 1 Pull-based]
+```
+
+### Testing All Push and Pull-based Operators
+
+```bash
+$ pytest tests.py
+```
+
+
+## Assignment 1 - Ray branch 
+> Pipeline and Data Parallel Operators using Ray Actors. Only implemented Pull-Based Operators.
+
+### Likeness Prediction Query 
+
+Running:
+```bash
+$ python assignment_12.py --query 1 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id] --mid [movie_id]
+```
+
+### Movie Recommendation Query 
+
+Running:
+```bash
+$ python assignment_12.py --query 2 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id]
+```
+
+### Testing Ray Operators
+
+```bash
+$ pytest tests.py
+```

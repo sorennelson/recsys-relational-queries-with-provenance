@@ -18,12 +18,6 @@ class TestOperators:
             next = ray.get(op.get_next.remote())
 
         return x
-
-    # # Scan
-    # def test_scan(self):
-    #     op = Scan('../data/friends.txt', None)
-    #     x = self.__pull(op)
-    #     assert len(x) == 78991
         
     # Join
     def test_join(self):

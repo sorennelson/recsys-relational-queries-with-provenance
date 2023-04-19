@@ -15,8 +15,6 @@ import argparse
 import pandas as pd
 import ray
 
-# Note (john): Make sure you use Python's logger to log
-#              information about your program
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
@@ -212,7 +210,7 @@ class Scan(Operator):
             try:
                 df_batch = self.data.get_chunk()
 
-            # EOF (TODO: ideally - maybe worth cleaning this up later)
+            # EOF
             except:
                 break
 
@@ -1519,29 +1517,3 @@ if __name__ == "__main__":
     else:
         logger.error("Only queries 1/2/3 implemented")
 
-    # TASK 4: Turn your data operators into Ray actors
-    #
-    # NOTE (john): Add your changes for Task 4 to a new git branch 'ray'
-    # Select/Join/Group By
-
-
-    logger.info("Assignment #2")
-
-    # TASK 1: Implement lineage query for movie recommendation
-
-    # YOUR CODE HERE
-
-
-    # TASK 2: Implement where-provenance query for 'likeness' prediction
-
-    # YOUR CODE HERE
-
-
-    # TASK 3: Implement how-provenance query for movie recommendation
-
-    # YOUR CODE HERE
-
-
-    # TASK 4: Retrieve most responsible tuples for movie recommendation
-
-    # YOUR CODE HERE
