@@ -142,10 +142,16 @@ Running:
 $ python assignment_12.py --query 2 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id] --pull [0 Push-based / 1 Pull-based] --how [output tuple index]
 ```
 
-## Most responsible tuples
+### Most responsible tuples
 > Given a movie recommendation, returns the input tuples whose responsibility ρ for that recommendation is at least 50%.
 
 Running:
 ```bash
 $ python assignment_12.py --query 2 --ff [path_to_friends_file.txt] --mf [path_to_ratings_file.txt] --uid [user_id] --pull [0 Push-based / 1 Pull-based] --responsibility [output tuple index]
+```
+
+### Testing Provenance Tracking
+
+```bash
+$ pytest tests.py
 ```
