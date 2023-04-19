@@ -16,8 +16,6 @@ import ray
 import pandas as pd
 import copy
 
-# Note (john): Make sure you use Python's logger to log
-#              information about your program
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
@@ -57,7 +55,6 @@ class ATuple:
     # Returns the Where-provenance of the attribute at index 'att_index' of self
     def where(self, att_index, is_start) -> List[Tuple]:
         # YOUR CODE HERE (ONLY FOR TASK 2 IN ASSIGNMENT 2)
-        # return self.operator.where(att_index, [self])
         if is_start:
             return self.operator.where(att_index, [self], is_start)
         else:
@@ -406,7 +403,7 @@ class Scan(Operator):
             try:
                 df_batch = self.data.get_chunk()
 
-            # EOF (TODO: ideally - maybe worth cleaning this up later)
+            # EOF
             except:
                 break
 
@@ -1962,7 +1959,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    logger.info("Assignment #1")
+    logger.info("Assignment #2")
 
     if args.query == 1:
         process_query1(args.ff, args.mf, args.uid, args.mid, args.pull==1,
@@ -1974,30 +1971,3 @@ if __name__ == "__main__":
         process_query3(args.ff, args.mf, args.uid, args.mid, args.pull==1)
     else:
         logger.error("Only queries 1/2/3 implemented")
-
-    logger.info("Assignment #2")
-
-    # TODO:
-        # Input/output
-        # Comments
-        # Query 1
-        # Tests
-
-    # TASK 1: Implement lineage query for movie recommendation
-
-    # YOUR CODE HERE
-
-
-    # TASK 2: Implement where-provenance query for 'likeness' prediction
-
-    # YOUR CODE HERE
-
-
-    # TASK 3: Implement how-provenance query for movie recommendation
-
-    # YOUR CODE HERE
-
-
-    # TASK 4: Retrieve most responsible tuples for movie recommendation
-
-    # YOUR CODE HERE
